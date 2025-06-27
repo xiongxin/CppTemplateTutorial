@@ -51,6 +51,12 @@
   - [6.4. 字典结构](#64-字典结构)
   - [6.5. “快速”排序](#65-快速排序)
   - [6.6. 其它常用的“轮子”](#66-其它常用的轮子)
+- [7. 非模板的编译期计算](#7-非模板的编译期计算)
+  - [7.1. `constexpr` 关键字详解 (`constexpr` Keyword Explained)](#71-constexpr-关键字详解-constexpr-keyword-explained)
+  - [7.2. `consteval` 关键字 (C++20) (`consteval` Keyword)](#72-consteval-关键字-c20-consteval-keyword)
+  - [7.3. 字面量运算符 (`constexpr` User-Defined Literals)](#73-字面量运算符-constexpr-user-defined-literals)
+  - [7.4. `std::string` 和 `std::vector` 的 `constexpr` 支持 (C++20)](#74-stdstring-和-stdvector-的-constexpr-支持-c20)
+  - [7.5. 与模板元编程的比较与结合 (Comparison and Combination with Template Metaprogramming)](#75-与模板元编程的比较与结合-comparison-and-combination-with-template-metaprogramming)
 
 # 1. 前言
 
@@ -3721,6 +3727,635 @@ int main() {
 这些“轮子”是模板元编程的日常工具。熟练掌握它们，可以帮助我们编写出更强大、更灵活、更安全的泛型C++代码。虽然现代C++（特别是C++17及以后）通过 `if constexpr`、Concepts（C++20）等特性简化了许多元编程任务，但理解这些基础轮子的原理对于深入掌握C++模板系统仍然至关重要。
 
 # 7. 非模板的编译期计算
+
+在C++11之前，模板元编程（TMP）是执行编译期计算和逻辑的主要手段。虽然强大，但TMP的语法往往比较晦涩，错误信息也不够直观，编译时间也可能较长。从C++11开始，语言引入了 `constexpr` 关键字，后续标准不断增强其能力，为开发者提供了更直接、更易读的方式来进行编译期计算。C++20引入的 `consteval` 则进一步强化了这方面的能力。本章将探讨这些非模板（或与模板结合使用）的编译期计算技术。
+
+## 7.1. `constexpr` 关键字详解 (`constexpr` Keyword Explained)
+
+`constexpr` 是 "constant expression"（常量表达式）的缩写。用 `constexpr` 修饰的实体（变量、函数、构造函数等）具备在编译期进行求值的潜力。
+
+**`constexpr` 变量**
+
+`constexpr` 变量是真正的编译期常量，它们的值在编译时就已确定，并且可以用于所有需要编译期常量的地方（例如，数组大小声明、非类型模板参数、`static_assert` 等）。
+
+```C++
+#include <iostream>
+#include <array>
+
+constexpr int square(int x) {
+    return x * x;
+}
+
+int main() {
+    constexpr int compile_time_val = 10;
+    constexpr int calculated_val = square(5); // square(5) 在编译期计算
+
+    std::array<int, compile_time_val> arr1; // OK, compile_time_val 是编译期常量
+    std::array<int, calculated_val> arr2;   // OK, calculated_val 也是编译期常量
+    // std::array<int, square(calculated_val)> arr3; // OK
+
+    static_assert(calculated_val == 25, "calculated_val should be 25");
+
+    std::cout << "arr1 size: " << arr1.size() << std::endl;
+    std::cout << "arr2 size: " << arr2.size() << std::endl;
+
+    // int runtime_var = 10;
+    // constexpr int cx_runtime_var = runtime_var; // 错误！runtime_var 不是常量表达式
+
+    return 0;
+}
+```
+要声明一个 `constexpr` 变量，其初始化表达式必须是常量表达式。
+
+**`constexpr` 函数**
+
+`constexpr` 函数是一种特殊函数，如果其实参是常量表达式，那么对该函数的调用 *可以* 在编译期求值。如果实参不是常量表达式，`constexpr` 函数就像普通函数一样在运行时执行。
+
+**C++11 中的规则：**
+-   函数体必须非常简单，通常只包含一个 `return` 语句。
+-   不能有副作用（除了修改生命周期始于函数调用内的对象）。
+-   不能声明静态或线程局部变量。
+-   不能有 try-catch 块或 goto 语句。
+
+```C++
+// C++11 constexpr factorial
+constexpr long long factorial_c11(int n) {
+    return (n <= 1) ? 1 : (n * factorial_c11(n - 1));
+}
+constexpr long long fact5_c11 = factorial_c11(5); // 编译期计算
+```
+
+**C++14 及更高版本中的增强：**
+C++14 大大放宽了对 `constexpr` 函数的限制：
+-   可以包含多个语句。
+-   可以声明局部变量（但不能是静态或线程局部）。
+-   可以使用循环（`for`, `while`, `do-while`）、条件语句（`if`, `switch`）。
+-   可以修改局部变量。
+-   仍然不能有 try-catch（C++20 中 `constexpr` 函数内允许 try-catch，但不能捕获并在编译期处理异常），不能有 `goto`，不能调用非 `constexpr` 函数（除非该调用在非编译期上下文中）。
+
+```C++
+// C++14/17/20 constexpr sum of squares
+constexpr int sum_of_squares(int n) {
+    int sum = 0;
+    for (int i = 1; i <= n; ++i) {
+        sum += i * i;
+    }
+    return sum;
+}
+constexpr int sos3 = sum_of_squares(3); // 1*1 + 2*2 + 3*3 = 1+4+9 = 14
+static_assert(sos3 == 14, "Sum of squares for 3 should be 14");
+```
+
+**`constexpr` 构造函数和成员函数**
+
+`constexpr` 可以用于类的构造函数和成员函数，使得类的对象可以在编译期创建和操作（如果满足条件）。
+-   `constexpr` 构造函数：其函数体通常为空或只包含成员初始化（C++14后可以更复杂）。所有非静态数据成员必须用常量表达式初始化。
+-   `constexpr` 成员函数：行为类似于 `constexpr` 普通函数，可以对 `constexpr` 对象调用并在编译期求值。
+
+```C++
+#include <iostream>
+#include <stdexcept> // For std::out_of_range in C++20 example
+
+class Point {
+public:
+    double x, y;
+
+    // C++11 constexpr 构造函数
+    constexpr Point(double x_val, double y_val) : x(x_val), y(y_val) {}
+
+    // C++11 constexpr 成员函数
+    constexpr double get_x() const { return x; }
+    constexpr double get_y() const { return y; }
+
+    // C++14 constexpr 成员函数 (可以有局部变量和多条语句)
+    constexpr Point add(const Point& other) const {
+        return Point(x + other.x, y + other.y);
+    }
+
+    // C++20: constexpr 支持抛出异常（但编译期不能捕获）和虚函数
+    // constexpr virtual void some_virtual_func() {} // 虚函数不能是 constexpr (除非是 C++20 析构函数)
+    // C++20 允许 constexpr 析构函数
+    // constexpr ~Point() {} // 通常简单析构函数隐式 constexpr
+};
+
+// C++20: constexpr 虚函数 (析构函数可以)
+struct Base {
+    constexpr virtual ~Base() = default; // C++20
+};
+struct Derived : Base {
+    constexpr ~Derived() override = default; // C++20
+};
+
+
+int main() {
+    constexpr Point p1(1.0, 2.0);
+    constexpr double p1_x = p1.get_x(); // 编译期
+    static_assert(p1_x == 1.0, "");
+
+    constexpr Point p2(3.0, 4.0);
+    constexpr Point p3 = p1.add(p2);    // 编译期
+    static_assert(p3.get_x() == 4.0 && p3.get_y() == 6.0, "");
+    std::cout << "p3: (" << p3.x << ", " << p3.y << ")" << std::endl;
+
+    return 0;
+}
+```
+
+**`constexpr if` (C++17)**
+
+虽然在 6.6 节中提到过，`if constexpr` 与 `constexpr` 函数和变量紧密相关。它允许在编译时根据常量表达式条件选择性地编译代码块。
+
+```C++
+template <typename T>
+constexpr auto get_length(T const& container_or_array) {
+    if constexpr (std::is_array_v<T>) {
+        return std::extent_v<T>; // 对于C风格数组
+    } else {
+        return container_or_array.size(); // 对于有 .size() 成员的容器
+    }
+}
+// constexpr int arr[] = {1,2,3};
+// static_assert(get_length(arr) == 3);
+// constexpr std::array<int, 4> std_arr = {};
+// static_assert(get_length(std_arr) == 4);
+```
+
+**`constexpr` Lambdas (C++17)**
+
+C++17 允许 lambda 表达式被声明为 `constexpr`（如果它们满足 `constexpr` 函数的条件）。
+
+```C++
+#include <numeric> // std::accumulate (not constexpr in C++17 for this use)
+#include <array>
+
+constexpr auto sum_lambda = [](auto... args) constexpr {
+    return (args + ...); // C++17 fold expression
+};
+
+static_assert(sum_lambda(1, 2, 3, 4, 5) == 15);
+
+// C++20 allows more in lambdas, e.g., std::array in parameters/captures for constexpr
+template <typename T, std::size_t N>
+constexpr T sum_array_elements(const std::array<T, N>& arr) {
+    // C++17 lambda can be constexpr, but std::accumulate is not guaranteed constexpr
+    // for all inputs, and capturing structured bindings was later.
+    // C++20 makes this more feasible with constexpr std::accumulate and more.
+    T sum = 0;
+    for (std::size_t i = 0; i < N; ++i) {
+        sum += arr[i];
+    }
+    return sum;
+}
+constexpr std::array<int, 3> my_const_arr = {1,2,3};
+static_assert(sum_array_elements(my_const_arr) == 6);
+
+```
+
+**优势：**
+-   **可读性**：`constexpr` 代码通常比等效的TMP代码更像普通的C++代码，因此更易读、易懂、易维护。
+-   **调试**：`constexpr` 函数可以在运行时像普通函数一样调试（当以非常量表达式参数调用时）。
+-   **编译时间**：对于数值计算，`constexpr` 通常比基于模板的元编程编译更快。
+-   **错误信息**：`constexpr` 计算中发生的错误（如断言失败、不满足的约束）通常能产生比TMP更清晰的编译器错误信息。
+
+`constexpr` 是C++中进行编译期计算的现代基石，它使得将计算从运行时提前到编译期变得更加方便和直观。
+
+## 7.2. `consteval` 关键字 (C++20) (`consteval` Keyword)
+
+C++20 引入了 `consteval` 关键字，用于声明“立即函数”（immediate functions）。立即函数是必须在编译期求值的函数。如果一个 `consteval` 函数不能在编译期求值（例如，因为它的参数不是常量表达式，或者其内部操作无法在编译期完成），则程序是病构的（ill-formed），会导致编译错误。
+
+**与 `constexpr` 的区别：**
+
+-   **`constexpr` 函数**：*可以* 在编译期求值（如果参数是常量表达式），也可以在运行时求值（如果参数不是常量表达式）。
+-   **`consteval` 函数**：*必须* 在编译期求值。对 `consteval` 函数的调用本身就是一个常量表达式。
+
+这意味着 `consteval` 提供了更强的编译期执行保证。
+
+```C++
+#include <iostream>
+#include <array>
+
+consteval int compile_time_only_square(int n) {
+    return n * n;
+}
+
+constexpr int maybe_compile_time_square(int n) {
+    return n * n;
+}
+
+int main() {
+    constexpr int r1 = compile_time_only_square(5); // OK, 5是常量表达式
+    static_assert(r1 == 25);
+    std::cout << "r1: " << r1 << std::endl;
+
+    // int x = 5;
+    // int r2 = compile_time_only_square(x); // 错误！x不是常量表达式，consteval函数必须编译期求值
+
+    constexpr int r3 = maybe_compile_time_square(5); // OK, 编译期求值
+    static_assert(r3 == 25);
+    std::cout << "r3: " << r3 << std::endl;
+
+    int y = 10;
+    int r4 = maybe_compile_time_square(y); // OK, 运行时求值
+    std::cout << "r4: " << r4 << std::endl; // 输出 100
+
+    // consteval 函数的地址不能获取，因为它们不存在于运行时
+    // auto fp1 = compile_time_only_square; // 错误
+    auto fp2 = maybe_compile_time_square;    // OK (如果用作运行时函数指针)
+
+    // 用于初始化非constexpr变量
+    int r5 = compile_time_only_square(10); // OK, 调用是常量表达式，其结果用于初始化运行时变量
+    std::cout << "r5: " << r5 << std::endl;
+
+    return 0;
+}
+```
+
+**规则和特性：**
+-   `consteval` 函数隐式为 `inline`。
+-   `consteval` 函数的返回类型和参数类型必须是字面量类型（LiteralType）。
+-   `consteval` 函数体内的规则与 `constexpr` 函数（C++14及以后）类似，允许局部变量、循环、条件等，但所有执行路径都必须能在编译期完成。
+-   不能是虚函数。
+-   不能是构造函数或析构函数（但构造函数可以调用 `consteval` 函数）。
+
+**使用场景：**
+
+`consteval` 非常适用于那些只在编译期有意义、用于生成配置、查找表、或执行某种代码生成逻辑的函数。
+1.  **编译期字符串哈希/解析**：
+    ```C++
+    #include <string_view> // C++17, string_view can be constexpr
+
+    consteval uint32_t fnv1a_hash(std::string_view str) {
+        uint32_t hash = 0x811c9dc5; // FNV offset basis
+        for (char c : str) {
+            hash ^= static_cast<uint32_t>(c);
+            hash *= 0x01000193; // FNV prime
+        }
+        return hash;
+    }
+
+    constexpr uint32_t my_hash = fnv1a_hash("hello");
+    // static_assert(my_hash == some_known_value);
+    ```
+2.  **生成编译期查找表**：
+    ```C++
+    template <size_t N>
+    consteval auto make_sine_lookup_table() {
+        std::array<double, N> table{};
+        for (size_t i = 0; i < N; ++i) {
+            // 伪代码，实际的 std::sin 不是 consteval/constexpr in C++20
+            // table[i] = /* 计算 sin(2 * PI * i / N) */;
+            table[i] = static_cast<double>(i) / N; // 示例计算
+        }
+        return table;
+    }
+    // constexpr auto sine_table = make_sine_lookup_table<256>();
+    ```
+    (注意：标准库数学函数如 `std::sin` 在C++20中并非都是 `constexpr`。C++23中 `<cmath>` 的部分函数增加了 `constexpr` 支持。此例仅为演示结构。)
+
+3.  **强制编译期初始化**：确保某些关键的配置或元数据完全在编译期生成，避免运行时初始化开销或错误。
+
+`consteval` 通过保证编译期执行，为开发者提供了更强的控制力，确保某些计算逻辑不会意外地泄漏到运行时。它是对 `constexpr` 的一个有益补充，使得编译期编程的意图更加明确。
+
+## 7.3. 字面量运算符 (`constexpr` User-Defined Literals)
+
+C++11 引入了用户定义字面量（User-Defined Literals, UDLs），允许开发者创建新的字面量后缀，从而以更自然或领域特定的方式表示常量。当这些字面量运算符被声明为 `constexpr` 时，它们可以在编译期处理字面量数据，生成编译期常量。
+
+**基本语法：**
+
+用户定义字面量运算符是一个特殊名字的函数，形式为 `operator"" _suffix`。
+-   对于整型字面量：`constexpr ReturnType operator"" _suffix(unsigned long long n)`
+-   对于浮点字面量：`constexpr ReturnType operator"" _suffix(long double d)` 或 `constexpr ReturnType operator"" _suffix(const char* s)` (接收原始字符串形式)
+-   对于字符字面量：`constexpr ReturnType operator"" _suffix(char c)`
+-   对于字符串字面量：`constexpr ReturnType operator"" _suffix(const char* s, size_t len)`
+
+后缀必须以下划线 `_` 开头。
+
+**`constexpr` UDLs 示例：**
+
+1.  **二进制字面量 (C++11/14 风格，C++14原生支持 `0b` 前缀)**
+    虽然C++14直接支持 `0b`，但这是一个很好的 `constexpr` UDL 教学例子。
+    ```C++
+    #include <iostream>
+    #include <string>
+    #include <stdexcept> // For error handling
+
+    // 编译期字符串解析为整数
+    constexpr unsigned long long parse_binary_str(const char* s, size_t len) {
+        unsigned long long val = 0;
+        for (size_t i = 0; i < len; ++i) {
+            val <<= 1;
+            if (s[i] == '1') {
+                val |= 1;
+            } else if (s[i] != '0') {
+                // 在 constexpr 函数中，不能直接 throw 导致编译失败 (C++20前)
+                // 但可以返回一个错误值或在 static_assert 中使用
+                // C++20 consteval 可以更直接地处理错误
+                // 对于教学，我们假设输入有效或在运行时抛出
+                // 若要严格编译期，则此函数需要更复杂的处理或用于 consteval
+            }
+        }
+        return val;
+    }
+
+    // C++14 constexpr UDL for binary
+    // Note: C++14 allows more in constexpr functions.
+    // For a C++11 version, parse_binary_str would need to be recursive or simpler.
+    constexpr unsigned long long operator"" _b(const char* s) {
+        // Simplified: find length first
+        size_t len = 0;
+        while(s[len] != '\0') ++len;
+        // This loop makes it non-C++11 constexpr.
+        // A true C++11 version would take (const char* s, size_t len)
+        // or be recursive for string parsing.
+        // For simplicity, assuming a helper or C++14+ context for string length.
+
+        unsigned long long val = 0;
+        for (size_t i = 0; i < len; ++i) {
+            if (s[i] != '0' && s[i] != '1') {
+                 // Cannot throw std::runtime_error in constexpr pre-C++20
+                 // and expect compile-time failure from it.
+                 // Best to use for static_assert or consteval.
+            }
+            val = (val << 1) | (s[i] - '0');
+        }
+        return val;
+
+    }
+
+    // A more robust C++11/14 approach for string UDLs (takes len)
+    constexpr unsigned long long operator"" _bin(const char* s, size_t len) {
+        unsigned long long res = 0;
+        for (size_t i = 0; i < len; ++i) {
+            if (s[i] != '0' && s[i] != '1') {
+                // This would ideally cause a compile-time error.
+                // In C++11/14, a common technique is to have the UDL
+                // return a wrapper that throws on invalid input if used at runtime,
+                // or use the result in a static_assert.
+                // For consteval (C++20), throwing would make it ill-formed.
+            }
+            res = (res << 1) | (s[i] - '0');
+        }
+        return res;
+    }
+
+
+    int main() {
+        constexpr unsigned long long val1 = 10110_bin; // 22
+        static_assert(val1 == 22, "Binary literal failed");
+        std::cout << "10110_bin = " << val1 << std::endl;
+
+        // C++14 native binary literals
+        constexpr int native_bin = 0b10110;
+        static_assert(native_bin == 22, "");
+        std::cout << "0b10110 = " << native_bin << std::endl;
+        return 0;
+    }
+    ```
+
+2.  **角度转换为弧度：**
+    ```C++
+    #include <cmath> // For M_PI (may not be standard, use custom PI or std::numbers::pi in C++20)
+    #ifndef M_PI
+    #define M_PI 3.14159265358979323846
+    #endif
+
+    constexpr long double operator"" _deg_to_rad(long double degrees) {
+        return degrees * M_PI / 180.0;
+    }
+
+    int main_deg() { // Renamed main to avoid conflict
+        constexpr long double angle_rad = 90.0_deg_to_rad;
+        // static_assert(angle_rad == M_PI / 2.0); // Floating point comparisons are tricky
+        std::cout << "90.0_deg_to_rad = " << angle_rad << std::endl;
+        std::cout << "M_PI/2 = " << M_PI/2.0 << std::endl;
+        return 0;
+    }
+    ```
+
+3.  **编译期字符串转换为整数ID (类似 `fnv1a_hash` from 7.2 but as UDL):**
+    ```C++
+    #include <cstdint>
+    // Assuming fnv1a_hash is consteval or constexpr as in 7.2
+    consteval uint32_t fnv1a_hash_udl(const char* str, size_t len) {
+        // (Implementation from 7.2, adapted for (const char*, size_t))
+        uint32_t hash = 0x811c9dc5;
+        for (size_t i = 0; i < len; ++i) {
+            hash ^= static_cast<uint32_t>(str[i]);
+            hash *= 0x01000193;
+        }
+        return hash;
+    }
+
+    constexpr uint32_t operator"" _hash(const char* s, size_t len) {
+        // In C++17, a constexpr UDL can call a consteval function if the call is
+        // part of a constant expression evaluation.
+        // Or, fnv1a_hash_udl itself can be just constexpr.
+        return fnv1a_hash_udl(s, len);
+    }
+
+    int main_hash() { // Renamed main
+        constexpr uint32_t id1 = "config_value"_hash;
+        constexpr uint32_t id2 = "another_key"_hash;
+        // static_assert(id1 != id2);
+        std::cout << "hash of 'config_value': " << id1 << std::endl;
+        return 0;
+    }
+    ```
+
+**用途和优势：**
+-   **可读性增强**：使字面量更符合领域特定表示，如 `10_km`, `255_u8`, `"Error_Code_X"_id`。
+-   **编译期验证/转换**：可以在编译时解析、验证字面量格式或将其转换为内部表示，提前发现错误。
+-   **类型安全**：UDLs可以返回强类型对象，而不是依赖于基本类型的隐式转换，例如返回一个 `Distance` 类型而不是裸的 `double`。
+
+`constexpr` 用户定义字面量是 `constexpr` 功能的一个强大应用，它结合了自定义语法糖和编译期计算的威力，使得代码在特定场景下更加表达清晰且安全。
+
+## 7.4. `std::string` 和 `std::vector` 的 `constexpr` 支持 (C++20)
+
+C++20 标准带来了对 `std::string` 和 `std::vector` 的重大增强：它们的部分接口（包括构造、访问、修改等）现在是 `constexpr` 的。这意味着我们可以在编译期创建和操作动态数组和字符串，极大地扩展了编译期编程的能力。
+
+**核心变化：**
+-   `std::string` 和 `std::vector` 的构造函数（某些）、析构函数、`operator[]`、`at()`、`data()`、`size()`、`empty()`、`begin()`/`end()`（及其 `const` 版本）等许多成员函数被声明为 `constexpr`。
+-   动态内存分配（通常由 `std::allocator` 处理）在 `constexpr` 上下文中受到特殊处理：如果分配的内存在常量表达式求值结束前被释放，则是允许的。这使得 `std::string` 和 `std::vector` 可以在 `constexpr` 函数内部进行动态调整大小。
+
+**示例：编译期字符串操作**
+```C++
+#include <string> // Needs C++20 standard library for constexpr string
+#include <vector> // Needs C++20 standard library for constexpr vector
+#include <iostream>
+#include <algorithm> // For std::sort, std::reverse (constexpr in C++20)
+
+// This example heavily relies on C++20 features for std::string and std::vector
+// to be constexpr-friendly. Compile with -std=c++20 or /std:c++20.
+
+constexpr std::string get_greeting(const std::string& name) {
+    if (name.empty()) {
+        return "Hello, guest!";
+    }
+    std::string result = "Hello, "; // Constexpr construction
+    result += name;                 // Constexpr append
+    result += "!";
+    return result;
+}
+
+constexpr std::vector<int> get_sorted_squares(const std::vector<int>& nums) {
+    std::vector<int> squares; // Constexpr default construction
+    for (int x : nums) {
+        squares.push_back(x * x); // Constexpr push_back (may reallocate)
+    }
+    // std::sort is constexpr in C++20
+    // std::sort(squares.begin(), squares.end()); // Sorting requires more involved constexpr machinery
+                                                // or a simpler sort for this example if std::sort isn't fully constexpr
+                                                // for all iterator types or operations in a specific library version.
+    // For simplicity, let's do a manual bubble sort which is easier to make constexpr
+    if (!squares.empty()) { // Avoid issues with empty vector in loop
+        for (size_t i = 0; i < squares.size() -1; ++i) {
+            for (size_t j = 0; j < squares.size() - i - 1; ++j) {
+                if (squares[j] > squares[j+1]) {
+                    int temp = squares[j];
+                    squares[j] = squares[j+1];
+                    squares[j+1] = temp;
+                }
+            }
+        }
+    }
+    return squares;
+}
+
+
+int main() {
+    constexpr std::string greeting1 = get_greeting("World");
+    static_assert(greeting1 == "Hello, World!");
+    std::cout << greeting1 << std::endl;
+
+    constexpr std::string guest_greeting = get_greeting("");
+    static_assert(guest_greeting == "Hello, guest!");
+    std::cout << guest_greeting << std::endl;
+
+    // Note: Initializing a constexpr std::vector directly with list initialization
+    // for use in other constexpr expressions requires the vector's constructor
+    // from initializer_list to be constexpr and the underlying allocations to be valid.
+    // This area can be tricky and highly dependent on standard library implementation quality for C++20.
+    // A common way to get data into a constexpr vector is via a constexpr function.
+
+    // Example of creating a vector that can be used in a constexpr context
+    constexpr auto create_my_vector = []() {
+        std::vector<int> v;
+        v.push_back(3);
+        v.push_back(1);
+        v.push_back(2);
+        return v;
+    };
+    constexpr std::vector<int> my_vec = create_my_vector();
+
+    constexpr std::vector<int> sorted_squares = get_sorted_squares(my_vec);
+    static_assert(sorted_squares.size() == 3);
+    static_assert(sorted_squares[0] == 1); // 1*1
+    static_assert(sorted_squares[1] == 4); // 2*2
+    static_assert(sorted_squares[2] == 9); // 3*3
+
+    std::cout << "Sorted squares: ";
+    for (int sq : sorted_squares) {
+        std::cout << sq << " ";
+    }
+    std::cout << std::endl;
+
+    return 0;
+}
+```
+**(注意：上述代码需要C++20编译器和标准库。`std::sort` 的 `constexpr` 支持可能依赖于具体的库实现细节，一个简单的手动排序（如冒泡排序）更容易在 `constexpr` 上下文中保证工作。示例中已改为手动排序。)**
+
+**影响和用途：**
+-   **更自然的编译期数据处理**：可以直接使用熟悉的 `std::string` 和 `std::vector` API 进行编译期的数据聚合和转换，而无需依赖基于参数包的递归模板或自定义的 Typelist/IntegerSequence 实现。
+-   **编译期解析和生成**：可以解析配置文件（以字符串形式传入）、生成代码片段或元数据，结果存储在编译期 `std::string` 或 `std::vector` 中。
+-   **增强的 `consteval` 函数**：`consteval` 函数可以利用这些 `constexpr`-enabled 容器来执行更复杂的任务。
+-   **与 `std::format` (C++20) 结合**：编译期格式化字符串成为可能。
+
+**限制：**
+-   **动态分配规则**：虽然允许动态分配，但所有在常量表达式中分配的内存必须在该常量表达式求值结束前释放。这意味着不能创建一个 `constexpr std::string` 全局变量，其内存在程序启动时才通过动态分配获得。通常，这意味着这些容器在 `constexpr` 上下文中用作值类型，或者其内容来自编译期已知的数据。
+-   **并非所有成员都 `constexpr`**：一些可能涉及无法在编译期满足的依赖（如IO、某些同步原语）的成员函数仍然不是 `constexpr`。
+
+`constexpr std::string` 和 `std::vector` 是C++20中编译期编程的一大步，它们弥合了运行时编程和编译期编程之间的一些差距，使得更多复杂的逻辑可以用更传统、更易于理解的方式在编译期执行。
+
+## 7.5. 与模板元编程的比较与结合 (Comparison and Combination with Template Metaprogramming)
+
+模板元编程（TMP）和基于 `constexpr`/`consteval` 的编译期计算是C++中实现编译期逻辑的两种主要方法。它们各有优劣，并且常常可以结合使用以发挥各自的长处。
+
+**比较：**
+
+| 特性           | 模板元编程 (TMP)                                  | `constexpr`/`consteval`                                       |
+|----------------|----------------------------------------------------|--------------------------------------------------------------|
+| **主要目标**   | 类型计算、代码生成、编译期断言、实现泛型算法        | 值计算、编译期函数执行、创建编译期对象                       |
+| **语法**       | 基于模板特化、递归实例化，通常较晦涩                 | 更接近常规C++语法，通常更易读、易维护                         |
+| **错误信息**   | 往往冗长、难懂 (SFINAE错误、递归深度超限等)          | 通常更清晰，接近运行时错误（如 `static_assert` 失败）          |
+| **编译时间**   | 对于复杂逻辑或大量实例化，可能显著增加编译时间        | 对于等效的值计算，通常编译更快                               |
+| **调试**       | 非常困难，主要靠编译器错误和 `static_assert`        | `constexpr` 函数可在运行时调试（当非编译期使用时）             |
+| **表达能力**   | 图灵完备，可操作类型和值，非常灵活                  | 主要用于值计算和对象操作；类型操作能力有限（但可结合TMP）     |
+| **适用场景**   | 类型操作（Type Traits, `std::tuple` manipulation）、需要基于类型进行复杂分发、代码生成（如`std::integer_sequence`应用） | 数值计算、编译期配置、解析简单字面量、创建编译期数据结构    |
+| **演进**       | C++98 即有基础，C++11/14/17 (variadics, type traits) 增强 | C++11 (`constexpr`), C++14/17 (放宽限制), C++20 (`consteval`, `constexpr`容器) 显著增强 |
+
+**选择策略：**
+
+-   **优先 `constexpr`/`consteval`**：对于主要涉及值计算、编译期配置或简单对象操作的任务，`constexpr` 和 `consteval` 通常是首选，因为它们代码更清晰、编译更快、错误信息更好。
+-   **TMP 用于类型计算**：当需要根据类型特性进行复杂的逻辑分支、转换类型、生成新类型或操作类型列表（Typelists）时，模板元编程仍然是核心工具。例如，实现复杂的类型萃取、SFINAE 规则、或高级泛型库的内部机制。
+-   **TMP 用于代码生成模式**：当需要根据编译期参数生成重复或模式化的代码结构时（如展开循环、生成函数重载集），TMP（特别是参数包和 `std::integer_sequence`）非常有效。
+
+**结合使用：**
+
+TMP 和 `constexpr`/`consteval` 并非互斥，它们可以有效地结合：
+
+1.  **`constexpr` 函数用于 TMP**：
+    -   `constexpr` 函数的结果可以作为非类型模板参数。
+    -   `constexpr` 函数可以在 `static_assert` 中使用，验证TMP的结果或约束。
+    -   `constexpr` 函数可以用于 `std::enable_if` 或其他SFINAE上下文中，提供编译期布尔条件。
+    ```C++
+    #include <type_traits>
+
+    constexpr bool is_small_type(size_t size) {
+        return size <= 4;
+    }
+
+    template <typename T,
+              typename = std::enable_if_t<is_small_type(sizeof(T))>>
+    class SmallTypeOnly {
+        // ...
+    };
+
+    // SmallTypeOnly<char> s1; // OK
+    // SmallTypeOnly<double> s2; // 错误，sizeof(double) > 4 (通常)
+    ```
+
+2.  **TMP 结果用于 `constexpr` 函数**：
+    -   TMP 可以计算出一个编译期常量（如 `Factorial<N>::value`），这个常量可以作为 `constexpr` 函数的参数。
+    -   TMP 可以生成一个类型（如 `At<MyTypeList, N>::Result`），`constexpr` 函数可以根据这个类型进行操作（例如，通过 `if constexpr` 判断类型属性）。
+    ```C++
+    #include <array>
+    template <int N> struct SizeValue { static constexpr int value = N*N; };
+
+    template <typename T>
+    constexpr std::array<T, SizeValue<5>::value> create_array_with_tmp_size() {
+        std::array<T, SizeValue<5>::value> arr = {};
+        // ... 初始化 ...
+        return arr;
+    }
+    // constexpr auto my_arr = create_array_with_tmp_size<int>();
+    // static_assert(my_arr.size() == 25);
+    ```
+
+3.  **`if constexpr` 内部使用类型萃取**：
+    `if constexpr` 的条件通常是一个依赖于类型模板参数的 `constexpr` 布尔值，而这个值往往来自类型萃取（本身是TMP）。
+    ```C++
+    template <typename T>
+    void process_data(T data) {
+        if constexpr (std::is_integral_v<T>) {
+            // ... 整数处理 ...
+        } else if constexpr (std::is_same_v<T, std::string>) { // C++20: std::string can be constexpr
+            // ... 字符串处理 ...
+        }
+    }
+    ```
+
+**总结趋势：**
+C++ 语言的趋势是提供更多内置的、语法更友好的编译期计算机制。`constexpr` 和 `consteval` 的不断增强，以及 `constexpr` 对标准库组件（如 `std::string`, `std::vector`, `std::algorithm` 的部分）的扩展，使得许多过去只能用复杂TMP实现的任务可以用更简单直接的方式完成。然而，模板元编程在类型操纵和高级泛型设计方面仍然具有不可替代的核心地位。明智地选择和结合这两种技术，可以编写出既强大又易于维护的现代C++代码。
 
 # 8. 模板的进阶技巧
 ## 8.1. 嵌入类
