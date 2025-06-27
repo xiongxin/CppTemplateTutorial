@@ -44,6 +44,13 @@
     - [4.3.1. “概念” 解决了什么问题](#431-概念-解决了什么问题)
     - [4.3.2. "概念"入门](#432-概念入门)
 - [5. 未完成章节](#5-未完成章节)
+- [6. 元编程下的数据结构与算法](#6-元编程下的数据结构与算法)
+  - [6.1. 表达式与数值计算](#61-表达式与数值计算)
+  - [6.2. 获得类型的属性——类型萃取（Type Traits）](#62-获得类型的属性类型萃取type-traits)
+  - [6.3. 列表与数组](#63-列表与数组)
+  - [6.4. 字典结构](#64-字典结构)
+  - [6.5. “快速”排序](#65-快速排序)
+  - [6.6. 其它常用的“轮子”](#66-其它常用的轮子)
 
 # 1. 前言
 
@@ -2724,14 +2731,994 @@ concept Incrementable = requires(T t) { ++t; };
 
 # 5. 未完成章节
 
-```
 # 6. 元编程下的数据结构与算法
+
+在前面的章节中，我们已经领略了模板元编程的基础威力，特别是如何通过特化和SFINAE等机制在编译期执行代码和决策。本章我们将更进一步，探讨如何利用这些技术构建编译期的数据结构和实现算法。这些编译期实体与运行时对应物在概念上相似，但它们的“元素”通常是类型或编译期常量，而“操作”则通过模板实例化和特化来完成。
+
 ## 6.1. 表达式与数值计算
-## 6.2. 获得类型的属性——类型萃取（Type Traits） 
+
+模板元编程最直接的应用之一便是在编译期完成数值计算。通过将数值作为模板参数（通常是整型、枚举或`char`等），我们可以编写模板来执行算术运算。其核心思想是利用递归模板实例化来模拟计算过程，并通过特化来定义递归的基线条件。
+
+例如，我们来实现一个编译期的阶乘计算：
+
+```C++
+#include <iostream>
+
+// 编译期阶乘计算
+template <int N>
+struct Factorial {
+    // 静态常量 value 用于存储计算结果
+    static const long long value = N * Factorial<N - 1>::value;
+};
+
+// 特化版本：处理递归的基线条件 (0! = 1)
+template <>
+struct Factorial<0> {
+    static const long long value = 1;
+};
+
+int main() {
+    // 在编译期计算 5!
+    const long long five_factorial = Factorial<5>::value;
+    std::cout << "Factorial<5>::value = " << five_factorial << std::endl; // 输出 120
+
+    // const long long twenty_factorial = Factorial<20>::value; // 对于较大的数，结果可能溢出 long long
+    // std::cout << "Factorial<20>::value = " << twenty_factorial << std::endl;
+
+    // 尝试一个在C++11后更推荐的写法，使用 constexpr
+    // constexpr 函数也可以在编译期进行计算
+    constexpr long long factorial_constexpr(int n) {
+        return (n <= 1) ? 1 : (n * factorial_constexpr(n - 1));
+    }
+
+    constexpr long long five_factorial_cx = factorial_constexpr(5);
+    std::cout << "factorial_constexpr(5) = " << five_factorial_cx << std::endl; // 输出 120
+
+    // static_assert 可以在编译期验证条件
+    static_assert(Factorial<5>::value == 120, "5! should be 120");
+    static_assert(factorial_constexpr(5) == 120, "factorial_constexpr(5) should be 120");
+
+    return 0;
+}
+```
+
+在这个例子中：
+- `Factorial<N>` 结构体模板通过递归地引用 `Factorial<N-1>::value` 来计算阶乘。
+- `Factorial<0>` 是一个完全特化，它定义了递归的终止条件，即 `0!` 的值为 `1`。
+- `Factorial<5>::value` 的计算在编译阶段完成，结果 `120` 直接嵌入到最终的可执行文件中。
+
+同样的技术可以扩展到更复杂的表达式，例如斐波那契数列、幂运算等。
+
+```C++
+// 编译期斐波那契数列
+template <int N>
+struct Fibonacci {
+    static const long long value = Fibonacci<N - 1>::value + Fibonacci<N - 2>::value;
+};
+
+template <>
+struct Fibonacci<0> {
+    static const long long value = 0;
+};
+
+template <>
+struct Fibonacci<1> {
+    static const long long value = 1;
+};
+
+// 使用示例
+// const long long fib_10 = Fibonacci<10>::value; // 编译期计算第10个斐波那契数
+// static_assert(Fibonacci<10>::value == 55, "Fibonacci<10> should be 55");
+```
+
+**编译期数值计算的优势：**
+1.  **性能**：计算在编译时完成，运行时无需额外开销。这对于性能敏感的代码段（如游戏循环、嵌入式系统）可能非常重要。
+2.  **常量保证**：结果是真正的编译期常量，可以用在需要编译期常量的地方（如数组大小、`static_assert`、其他模板参数等）。
+3.  **错误检测**：某些计算错误（如除零、溢出导致的截断，虽然溢出本身不总是编译错误）可以在编译阶段被发现，而不是等到运行时。
+
+**限制：**
+1.  **递归深度**：编译器对模板递归实例化的深度有限制，过深的计算可能导致编译错误。
+2.  **复杂性**：对于非常复杂的算法，用模板元编程实现可能变得难以理解和维护。
+3.  **编译时间**：大量的编译期计算会显著增加编译时间。
+4.  **浮点数**：在C++11之前，浮点数不能直接作为模板非类型参数。C++20开始支持浮点非类型参数，但在此之前，通常需要通过将浮点数表示为整数（例如，乘以一个大的缩放因子）或使用库来间接处理。
+
+虽然 `constexpr` 函数在C++11及以后版本中为编译期计算提供了更直观和强大的方式，但理解基于模板的数值计算对于掌握模板元编程的本质仍然非常重要，并且在某些特定场景下（例如，需要基于计算结果进行类型选择或特化时），模板元编程结构依然是不可或缺的。
+
+## 6.2. 获得类型的属性——类型萃取（Type Traits）
+
+类型萃取（Type Traits）是模板元编程中一个极为重要的组成部分。它是一组在编译期查询类型属性或在类型间建立关系的模板。简单来说，类型萃取允许我们“询问”关于类型的问题，并在编译时根据答案做出决策。标准库在 `<type_traits>` 头文件中提供了大量的类型萃取工具。
+
+**什么是类型萃取？**
+
+类型萃取通常是一个类模板，它通过其成员（通常是静态常量 `value` 或类型别名 `type`）来暴露关于其模板参数类型的信息。
+
+例如：
+- `std::is_integral<T>::value`：如果 `T` 是整型（如 `int`, `char`, `bool`），则其 `value` 成员为 `true`，否则为 `false`。
+- `std::is_pointer<T>::value`：如果 `T` 是指针类型，则为 `true`。
+- `std::is_same<T, U>::value`：如果 `T` 和 `U` 是相同类型，则为 `true`。
+- `std::remove_const<T>::type`：提供一个与 `T` 相同但移除了顶层 `const` 修饰符的类型。
+- `std::conditional<bool B, typename T, typename F>::type`：如果 `B` 为 `true`，则 `type` 为 `T`，否则为 `F`。
+
+**类型萃取的实现原理：特化**
+
+类型萃取的核心实现机制是模板特化（包括完全特化和偏特化）。我们通过为特定类型或类型类别提供特化版本来定义其属性。
+
+让我们看一个简化的 `is_pointer` 实现：
+
+```C++
+#include <iostream>
+#include <type_traits> // 用于对比和参考
+
+// 基础模板（默认情况，不是指针）
+template <typename T>
+struct my_is_pointer {
+    static const bool value = false;
+};
+
+// 偏特化版本：匹配所有指针类型 T*
+template <typename T>
+struct my_is_pointer<T*> {
+    static const bool value = true;
+};
+
+// 偏特化版本：匹配所有指向 const 类型的指针 T const*
+// （实际上，上面的 T* 已经可以匹配 T const*，因为 T 可以推导为 const U）
+// 但为了更清晰，有时会提供更具体的偏特化
+// template <typename T>
+// struct my_is_pointer<const T*> {
+//     static const bool value = true;
+// };
+// 类似的还有 volatile, const volatile
+
+int main() {
+    std::cout << "my_is_pointer<int>::value: " << my_is_pointer<int>::value << std::endl;               // 0
+    std::cout << "my_is_pointer<int*>::value: " << my_is_pointer<int*>::value << std::endl;             // 1
+    std::cout << "my_is_pointer<const int*>::value: " << my_is_pointer<const int*>::value << std::endl; // 1
+    std::cout << "my_is_pointer<char*&>::value: " << my_is_pointer<char*&>::value << std::endl;         // 0 (引用不是指针)
+    std::cout << "my_is_pointer<void()>::value: " << my_is_pointer<void()>::value << std::endl;         // 0 (函数类型不是指针)
+    std::cout << "my_is_pointer<void(*)()>::value: " << my_is_pointer<void(*)()>::value << std::endl;   // 1 (函数指针是指针)
+
+    // 使用C++11引入的 _v 简化访问
+    // template< class T >
+    // inline constexpr bool my_is_pointer_v = my_is_pointer<T>::value;
+    // std::cout << "my_is_pointer_v<int*>: " << my_is_pointer_v<int*> << std::endl;
+
+    return 0;
+}
+```
+
+在这个例子中：
+1.  `template <typename T> struct my_is_pointer` 是基础模板，它假设任何给定的类型 `T` 都不是指针，所以 `value` 为 `false`。
+2.  `template <typename T> struct my_is_pointer<T*>` 是一个偏特化。当编译器遇到一个指针类型（如 `int*`）来实例化 `my_is_pointer` 时，这个偏特化版本会因为更匹配而被选中。此时，`T` 会被推导为指针所指向的类型（例如，对于 `int*`，`T` 是 `int`），而 `value` 被定义为 `true`。
+
+**类型转换萃取（Transformation Traits）**
+
+除了查询属性（Category Traits），类型萃取还可以用于在编译期转换类型，例如添加或移除 `const`、`volatile`、引用、指针等。
+
+简化的 `my_remove_pointer` 实现：
+
+```C++
+// 基础模板（如果 T 不是指针，则结果类型是 T 本身）
+template <typename T>
+struct my_remove_pointer {
+    typedef T type;
+};
+
+// 偏特化版本：匹配 T*
+template <typename T>
+struct my_remove_pointer<T*> {
+    typedef T type; // 结果类型是指针指向的类型
+};
+
+// 使用示例
+// my_remove_pointer<int*>::type i; // i 的类型是 int
+// my_remove_pointer<const char*>::type c; // c 的类型是 const char
+// my_remove_pointer<int>::type j; // j 的类型是 int
+```
+
+**类型萃取的应用场景：**
+
+1.  **SFINAE（Substitution Failure Is Not An Error）**：如前几章所述，类型萃取常与 SFINAE 结合，用于根据类型属性在编译期选择或排除函数模板的重载。
+    ```C++
+    template <typename T>
+    typename std::enable_if<std::is_integral<T>::value, void>::type
+    process(T val) {
+        // 针对整数类型的实现
+        std::cout << "Processing integral: " << val << std::endl;
+    }
+
+    template <typename T>
+    typename std::enable_if<std::is_floating_point<T>::value, void>::type
+    process(T val) {
+        // 针对浮点数类型的实现
+        std::cout << "Processing floating point: " << val << std::endl;
+    }
+    ```
+
+2.  **`if constexpr (condition)` (C++17)**：类型萃取可以作为 `if constexpr` 的条件，使得代码块根据编译期条件进行编译或丢弃。
+    ```C++
+    template <typename T>
+    void print_properties(T val) {
+        if constexpr (std::is_pointer_v<T>) {
+            std::cout << "It's a pointer." << std::endl;
+            if constexpr (!std::is_void_v<std::remove_pointer_t<T>>) {
+                 if (*val) std::cout << "It points to: " << *val << std::endl;
+            }
+        } else if constexpr (std::is_integral_v<T>) {
+            std::cout << "It's an integral." << std::endl;
+        } else {
+            std::cout << "It's something else." << std::endl;
+        }
+    }
+    ```
+    (注意：`_v` 和 `_t` 后缀是 C++14/17 中为方便使用 `::value` 和 `::type` 而引入的别名模板。)
+
+3.  **优化代码**：根据类型属性选择最优的算法实现。例如，对于“平凡可复制”（Trivially Copyable）的类型，内存复制操作（如 `memcpy`）可能比逐元素复制更高效。
+    ```C++
+    template <typename T, size_t N>
+    void copy_array(T(&dest)[N], const T(&src)[N]) {
+        if constexpr (std::is_trivially_copyable_v<T>) {
+            std::cout << "Using memcpy for trivially copyable type." << std::endl;
+            memcpy(dest, src, N * sizeof(T));
+        } else {
+            std::cout << "Using element-wise copy." << std::endl;
+            for (size_t i = 0; i < N; ++i) {
+                dest[i] = src[i];
+            }
+        }
+    }
+    ```
+
+4.  **编写泛型库**：类型萃取是编写高度泛型和自适应代码库（如STL、Boost）的基石。它们使得库能够根据用户提供的类型自动调整行为，提供类型安全和高性能。
+
+类型萃取是模板元编程的“感官”和“工具箱”，让我们能够在编译时理解和操纵C++的类型系统，从而编写出更智能、更灵活、更安全的代码。
+
 ## 6.3. 列表与数组
+
+在运行时编程中，列表和数组是基本的数据结构，用于存储和操作元素集合。在模板元编程中，我们也有类似的概念，但它们在编译期存在，其“元素”通常是类型（称为 typelist）或编译期常量（如整数序列）。这些编译期数据结构对于生成代码、执行编译期算法以及管理类型集合至关重要。
+
+**Typelist（类型列表）**
+
+Typelist 是一个由类型构成的序列，它是模板元编程中表示异构类型集合的常用方式。Alexandrescu 在其著作《Modern C++ Design》中推广了这一概念。一个简单的 Typelist 可以通过递归模板结构来定义：
+
+```C++
+#include <iostream>
+#include <typeinfo> // For typeid
+
+// Typelist 结构
+// 空列表标记
+struct NullType {};
+
+// Typelist 节点
+template <typename T, typename U>
+struct TypeNode {
+    typedef T Head; // 当前节点存储的类型
+    typedef U Tail; // 列表的其余部分 (另一个 TypeNode 或 NullType)
+};
+
+// --- 基本操作 ---
+
+// 1. 获取长度 Length
+template <typename TList> struct Length;
+
+template <> struct Length<NullType> {
+    static const unsigned int value = 0;
+};
+
+template <typename T, typename U>
+struct Length<TypeNode<T, U>> {
+    static const unsigned int value = 1 + Length<U>::value;
+};
+
+// 2. 按索引访问类型 At
+template <typename TList, unsigned int index> struct At;
+
+template <typename T, typename U>
+struct At<TypeNode<T, U>, 0> {
+    typedef T Result; // 索引为0，即为当前 Head
+};
+
+template <typename T, typename U, unsigned int index>
+struct At<TypeNode<T, U>, index> {
+    typedef typename At<U, index - 1>::Result Result; // 递归到 Tail
+};
+
+// 3. 追加类型 Append (创建一个新列表)
+template <typename TList, typename Element> struct Append;
+
+template <>
+struct Append<NullType, NullType> { // 技术上，一般不追加 NullType
+    typedef NullType Result;
+};
+
+template <typename Element>
+struct Append<NullType, Element> {
+    typedef TypeNode<Element, NullType> Result;
+};
+
+template <typename T, typename U, typename Element>
+struct Append<TypeNode<T, U>, Element> {
+    typedef TypeNode<T, typename Append<U, Element>::Result> Result;
+};
+
+
+// 示例 Typelist: (int, double, char)
+typedef TypeNode<int, TypeNode<double, TypeNode<char, NullType>>> MyTypeList;
+
+int main() {
+    std::cout << "Length of MyTypeList: " << Length<MyTypeList>::value << std::endl; // 3
+
+    // 获取 MyTypeList 中索引为1的类型 (double)
+    typedef At<MyTypeList, 1>::Result TypeAtIndex1;
+    std::cout << "Type at index 1: " << typeid(TypeAtIndex1).name() << std::endl; // 输出依赖于编译器，可能是 "d" for double
+
+    // 向 MyTypeList 追加 bool
+    typedef Append<MyTypeList, bool>::Result ExtendedList;
+    std::cout << "Length of ExtendedList: " << Length<ExtendedList>::value << std::endl; // 4
+    typedef At<ExtendedList, 3>::Result TypeAtIndex3;
+    std::cout << "Type at index 3 in ExtendedList: " << typeid(TypeAtIndex3).name() << std::endl; // 可能是 "b" for bool
+
+    return 0;
+}
+```
+
+Typelist 的操作（如获取长度、按索引访问、追加、查找等）都是通过模板元函数（即模板结构体及其特化）在编译期完成的。
+
+**`std::tuple` 和参数包（Variadic Templates）**
+
+C++11 引入了 `std::tuple` 和参数包，它们为处理编译期类型列表提供了更现代和便捷的方式。
+-   `std::tuple<Types...>` 本身就是一个存储异构类型值的运行时容器，但其类型参数 `Types...` 就是一个类型列表。
+-   参数包 `template <typename... Ts>` 允许我们直接操作类型列表。
+
+```C++
+#include <tuple>
+#include <iostream>
+#include <typeinfo>
+
+// 使用参数包获取长度
+template <typename... Ts>
+struct CountTypes {
+    static const size_t value = sizeof...(Ts);
+};
+
+// 使用参数包和 std::tuple_element 获取类型
+template <size_t I, typename... Ts>
+struct GetTypeAtIndex {
+    // std::tuple_element 需要一个 tuple 类型，所以我们构造一个
+    using type = typename std::tuple_element<I, std::tuple<Ts...>>::type;
+};
+
+
+int main() {
+    std::cout << "CountTypes<int, double, char>::value: "
+              << CountTypes<int, double, char>::value << std::endl; // 3
+
+    using MyTuple = std::tuple<int, double, char>;
+    std::cout << "std::tuple_size<MyTuple>::value: "
+              << std::tuple_size<MyTuple>::value << std::endl; // 3
+
+    using TypeAtIdx1 = GetTypeAtIndex<1, int, double, char>::type;
+    std::cout << "GetTypeAtIndex<1, int, double, char>::type: "
+              << typeid(TypeAtIdx1).name() << std::endl; // double
+
+    using TupleTypeAtIdx1 = std::tuple_element_t<1, MyTuple>;
+    std::cout << "std::tuple_element_t<1, MyTuple>: "
+              << typeid(TupleTypeAtIdx1).name() << std::endl; // double
+
+    return 0;
+}
+```
+
+**`std::integer_sequence` (C++14)**
+
+`std::integer_sequence<T, Ints...>` 表示一个编译期整数序列，其中 `T` 是整数的类型（如 `int`, `size_t`），`Ints...` 是一个整数常量参数包。它常用于在编译期生成索引序列，这在操作参数包或 `std::tuple` 时非常有用。
+
+```C++
+#include <utility> // For std::integer_sequence, std::index_sequence
+#include <iostream>
+#include <array>
+#include <tuple>
+
+// 辅助函数，用于打印 tuple 的每个元素
+template <typename Tuple, std::size_t... Is>
+void print_tuple_impl(const Tuple& t, std::index_sequence<Is...>) {
+    // ( (std::cout << (Is == 0 ? "" : ", ") << std::get<Is>(t)), ... ); // C++17 fold expression
+    // C++11/14 way:
+    using expander = int[];
+    (void)expander{0, ((std::cout << (Is == 0 ? "" : ", ") << std::get<Is>(t)), 0)...};
+    std::cout << std::endl;
+}
+
+template <typename... Args>
+void print_tuple(const std::tuple<Args...>& t) {
+    print_tuple_impl(t, std::index_sequence_for<Args...>{});
+}
+
+// 示例：将 tuple 转换为 array (如果所有类型相同)
+template <typename T, typename Tuple, std::size_t... Is>
+std::array<T, std::tuple_size<Tuple>::value> to_array_impl(const Tuple& t, std::index_sequence<Is...>) {
+    return {std::get<Is>(t)...};
+}
+
+template <typename T, typename... Args,
+          // SFINAE 确保所有 tuple 元素都可以转换为 T
+          typename = std::enable_if_t<std::conjunction_v<std::is_convertible<Args, T>...>> >
+std::array<T, sizeof...(Args)> tuple_to_array(const std::tuple<Args...>& t) {
+    return to_array_impl<T>(t, std::index_sequence_for<Args...>{});
+}
+
+
+int main() {
+    std::cout << "Integer sequence: ";
+    std::integer_sequence<int, 0, 1, 2, 3> seq; // 只是一个类型
+    // 通常使用别名 std::index_sequence<0, 1, 2, 3> (T 默认为 std::size_t)
+
+    // 打印 tuple
+    auto myTuple = std::make_tuple(10, 'a', 2.5);
+    print_tuple(myTuple); // 输出: 10, a, 2.5
+
+    // Tuple to array
+    auto intTuple = std::make_tuple(1, 2, 3, 4, 5);
+    std::array<int, 5> arr = tuple_to_array<int>(intTuple);
+    std::cout << "Array from tuple: ";
+    for(size_t i = 0; i < arr.size(); ++i) {
+        std::cout << arr[i] << (i == arr.size() - 1 ? "" : ", ");
+    }
+    std::cout << std::endl; // 输出: 1, 2, 3, 4, 5
+
+    return 0;
+}
+```
+在 `print_tuple` 示例中，`std::index_sequence_for<Args...>` 生成了一个序列 `0, 1, 2, ..., sizeof...(Args)-1`。这个序列随后被用于展开 `std::get<Is>(t)` 调用，从而访问 `std::tuple` 的每个元素。
+
+编译期列表和数组是元编程中强大的工具，它们使得我们能够在编译时对类型和常量集合执行复杂的操作，是实现高级泛型编程技术和代码生成的基础。
+
 ## 6.4. 字典结构
+
+在运行时，字典（或称映射、哈希表）是一种将键与值关联的数据结构。在模板元编程的上下文中，我们也可以创建类似编译期“字典”的结构，其中键和值通常是类型或编译期常量。这种结构允许我们在编译时根据一个“键”类型或常量来查找对应的“值”类型或常量。
+
+**基于 Typelist 的简单字典**
+
+一种实现编译期字典的方式是使用 Typelist，其中每个元素是一个“键值对”。一个键值对可以用 `std::pair`（如果键和值都是类型，则用 `TypeNode<Key, Value>`）或自定义的结构来表示。
+
+```C++
+#include <iostream>
+#include <typeinfo> // For typeid
+#include <string>
+
+// 先定义 Typelist (来自 6.3 节)
+struct NullType {};
+template <typename T, typename U> struct TypeNode { typedef T Head; typedef U Tail; };
+
+// 定义一个键值对结构
+template <typename KeyType, typename ValueType>
+struct Pair {
+    using Key = KeyType;
+    using Value = ValueType;
+};
+
+// 字典查找元函数
+template <typename DictList, typename KeyToFind>
+struct FindValueByKey;
+
+// 基线条件：在 NullType 中未找到
+template <typename KeyToFind>
+struct FindValueByKey<NullType, KeyToFind> {
+    // 未找到的标记，可以是特定类型或不定义 type
+    // typedef NotFoundType type; // 或者通过 SFINAE 使其失败
+};
+
+// 递归步骤
+template <typename K, typename V, typename Tail, typename KeyToFind>
+struct FindValueByKey<TypeNode<Pair<K, V>, Tail>, KeyToFind> {
+    // 使用 std::is_same 来比较键类型
+    // 如果键匹配，则 Result 是 V，否则在 Tail 中继续查找
+    using Result = typename std::conditional<
+        std::is_same<K, KeyToFind>::value,
+        V,
+        typename FindValueByKey<Tail, KeyToFind>::type
+    >::type;
+};
+
+// 定义一个字典实例
+// (int -> std::string), (char -> double), (float -> bool)
+using MyDictionary = TypeNode<Pair<int, std::string>,
+                     TypeNode<Pair<char, double>,
+                     TypeNode<Pair<float, bool>, NullType>>>;
+
+int main() {
+    // 查找 int 对应的类型
+    using ValueForInt = FindValueByKey<MyDictionary, int>::Result;
+    std::cout << "Value for key 'int': " << typeid(ValueForInt).name() << std::endl; // std::string
+
+    // 查找 char 对应的类型
+    using ValueForChar = FindValueByKey<MyDictionary, char>::Result;
+    std::cout << "Value for key 'char': " << typeid(ValueForChar).name() << std::endl; // double
+
+    // 查找 float 对应的类型
+    using ValueForFloat = FindValueByKey<MyDictionary, float>::Result;
+    std::cout << "Value for key 'float': " << typeid(ValueForFloat).name() << std::endl; // bool
+
+    // 查找一个不存在的键 (例如 double)
+    // 以下会导致编译错误，因为 FindValueByKey<NullType, double> 没有名为 Result 的成员
+    // (除非 FindValueByKey<NullType, ...> 提供了一个默认的 Result 或 NotFoundType)
+    // using ValueForDouble = FindValueByKey<MyDictionary, double>::Result;
+    // std::cout << "Value for key 'double': " << typeid(ValueForDouble).name() << std::endl;
+
+    return 0;
+}
+```
+在这个实现中：
+-   `Pair<KeyType, ValueType>` 定义了键值对。
+-   `MyDictionary` 是一个由 `Pair` 组成的 `TypeNode` 列表。
+-   `FindValueByKey` 是一个元函数，它递归地遍历列表。
+    -   如果当前节点的键 (`K`) 与 `KeyToFind` 相同（通过 `std::is_same` 判断），则其 `Result` 是对应的值 (`V`)。
+    -   否则，在列表的 `Tail` 中继续查找。
+    -   如果列表为空 (`NullType`)，则查找失败（在这个简单实现中，会导致编译错误，因为 `FindValueByKey<NullType, ...>` 没有 `Result` 成员。更健壮的实现会定义一个特殊的 `NotFound` 类型或使用SFINAE）。
+
+**使用参数包和特化**
+
+对于更复杂的场景，或者希望避免显式递归结构，可以结合参数包和特化来实现。例如，我们可以创建一个映射，将一组类型映射到特定的整数ID。
+
+```C++
+#include <iostream>
+#include <string>
+
+// 基础模板，默认ID（例如，-1表示未找到或默认）
+template <typename T>
+struct TypeToID {
+    static const int ID = -1;
+};
+
+// 特化：为特定类型指定ID
+template <> struct TypeToID<int>         { static const int ID = 1; };
+template <> struct TypeToID<double>      { static const int ID = 2; };
+template <> struct TypeToID<std::string> { static const int ID = 3; };
+template <> struct TypeToID<char>        { static const int ID = 4; };
+
+// 如果我们有一个类型列表，想判断它们是否都在映射中，或者获取它们的ID总和
+template <typename... Types>
+struct ProcessTypes;
+
+template <typename First, typename... Rest>
+struct ProcessTypes<First, Rest...> {
+    static void print_ids() {
+        std::cout << "ID for " << typeid(First).name() << ": " << TypeToID<First>::ID << std::endl;
+        ProcessTypes<Rest...>::print_ids();
+    }
+    static constexpr int sum_ids() {
+        return TypeToID<First>::ID + ProcessTypes<Rest...>::sum_ids();
+    }
+};
+
+template <>
+struct ProcessTypes<> { // 基线条件：空类型列表
+    static void print_ids() {}
+    static constexpr int sum_ids() { return 0; }
+};
+
+
+int main() {
+    std::cout << "ID for int: " << TypeToID<int>::ID << std::endl;         // 1
+    std::cout << "ID for float: " << TypeToID<float>::ID << std::endl;       // -1 (未特化)
+
+    std::cout << "\nProcessing type list (int, std::string, bool):\n";
+    ProcessTypes<int, std::string, bool>::print_ids();
+    // Output:
+    // ID for i: 1
+    // ID for NSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE: 3 (actual name varies)
+    // ID for b: -1
+
+    constexpr int sum = ProcessTypes<int, double, char>::sum_ids();
+    std::cout << "\nSum of IDs for (int, double, char): " << sum << std::endl; // 1 + 2 + 4 = 7
+    static_assert(sum == 7, "Sum should be 7");
+
+    return 0;
+}
+```
+这种通过特化 `TypeToID<SomeType>` 的方式，实际上就是一种从类型到整数常量的编译期映射。`ProcessTypes` 则演示了如何遍历一个类型列表并使用这个映射。
+
+**编译期字典的用途：**
+1.  **配置和策略选择**：根据一个键（例如代表某种配置的类型）选择相应的策略类型或常量参数。
+2.  **类型元数据**：将类型映射到其元数据（如大小、对齐方式的特定处理函数类型等）。
+3.  **代码生成**：根据键生成不同的代码片段或实例化不同的模板。
+4.  **模拟状态机**：其中状态和事件可以是类型，字典可以定义状态转移。
+
+虽然模板元编程中的字典结构不如运行时字典那样灵活（例如，不能在运行时动态添加条目），但它们为在编译期进行基于键的查找和决策提供了强大的机制。随着C++标准的发展，`constexpr` 功能的增强（例如 `constexpr std::map` 或 `std::array` 与 `constexpr` 函数结合）也为某些编译期键值查找提供了更接近运行时编程风格的替代方案，但基于模板的字典在纯类型操作和元编程算法中仍然有其独特的地位。
+
 ## 6.5. “快速”排序
+
+在模板元编程中，我们不仅可以操作数值和类型，还可以实现编译期的算法，例如排序。这里我们将演示一个编译期版本的“快速排序”思想，作用于一个整数序列（例如 `std::integer_sequence`）。由于元编程的特性，这个“排序”过程发生在编译时，结果是一个新的、已排序的 `std::integer_sequence` 类型。
+
+这个例子会比较复杂，因为它涉及到列表操作（如分割、连接）和递归。我们将使用 `std::integer_sequence` 作为我们的列表。
+
+**基本组件：**
+
+1.  **`ConcatSequences`**：连接两个 `std::integer_sequence`。
+2.  **`Partition`**：根据一个基准值（pivot）将一个序列分割成三部分：小于 pivot 的元素、等于 pivot 的元素、大于 pivot 的元素。
+3.  **`QuickSort`**：递归地应用分区和连接来排序序列。
+
+```C++
+#include <utility> // For std::integer_sequence
+#include <iostream>
+#include <type_traits> // For std::conditional, std::is_same
+
+// 1. ConcatSequences: 连接整数序列
+template <typename Seq1, typename Seq2> struct ConcatSequencesImpl;
+
+template <typename T, T... Is1, T... Is2>
+struct ConcatSequencesImpl<std::integer_sequence<T, Is1...>, std::integer_sequence<T, Is2...>> {
+    using type = std::integer_sequence<T, Is1..., Is2...>;
+};
+
+template <typename Seq1, typename Seq2>
+using ConcatSequences = typename ConcatSequencesImpl<Seq1, Seq2>::type;
+
+// 辅助：将单个元素添加到序列
+template <typename T, T Val, typename Seq> struct PrependElement;
+template <typename T, T Val, T... Is>
+struct PrependElement<T, Val, std::integer_sequence<T, Is...>> {
+    using type = std::integer_sequence<T, Val, Is...>;
+};
+
+
+// 2. Partition: 根据 pivot 分割序列
+// PartitionResult 将包含三个序列: Less, Equal, Greater
+template <typename TLess, typename TEqual, typename TGreater>
+struct PartitionResult {
+    using Less = TLess;
+    using Equal = TEqual;
+    using Greater = TGreater;
+};
+
+template <typename T, T Pivot, typename Seq, typename CurrentLess, typename CurrentEqual, typename CurrentGreater>
+struct PartitionImpl;
+
+// 基线条件：序列为空
+template <typename T, T Pivot, typename CurrentLess, typename CurrentEqual, typename CurrentGreater>
+struct PartitionImpl<T, Pivot, std::integer_sequence<T>, CurrentLess, CurrentEqual, CurrentGreater> {
+    using type = PartitionResult<CurrentLess, CurrentEqual, CurrentGreater>;
+};
+
+// 递归步骤
+template <typename T, T Pivot, T Head, T... Tail, typename CurrentLess, typename CurrentEqual, typename CurrentGreater>
+struct PartitionImpl<T, Pivot, std::integer_sequence<T, Head, Tail...>, CurrentLess, CurrentEqual, CurrentGreater> {
+    using RemainingSeq = std::integer_sequence<T, Tail...>;
+
+    using type = typename std::conditional<
+        (Head < Pivot),
+        // Head < Pivot: 将 Head 添加到 Less 序列
+        typename PartitionImpl<T, Pivot, RemainingSeq,
+                               typename PrependElement<T, Head, CurrentLess>::type,
+                               CurrentEqual,
+                               CurrentGreater>::type,
+        typename std::conditional<
+            (Head == Pivot),
+            // Head == Pivot: 将 Head 添加到 Equal 序列
+            typename PartitionImpl<T, Pivot, RemainingSeq,
+                                   CurrentLess,
+                                   typename PrependElement<T, Head, CurrentEqual>::type,
+                                   CurrentGreater>::type,
+            // Head > Pivot: 将 Head 添加到 Greater 序列
+            typename PartitionImpl<T, Pivot, RemainingSeq,
+                                   CurrentLess,
+                                   CurrentEqual,
+                                   typename PrependElement<T, Head, CurrentGreater>::type>::type
+        >::type
+    >::type;
+};
+
+// Partition 的入口
+template <typename T, T Pivot, typename Seq>
+struct Partition {
+    using EmptySeq = std::integer_sequence<T>;
+    using type = typename PartitionImpl<T, Pivot, Seq, EmptySeq, EmptySeq, EmptySeq>::type;
+};
+
+
+// 3. QuickSort
+template <typename Seq> struct QuickSortImpl;
+
+// 基线条件：空序列或单元素序列已经有序
+template <typename T>
+struct QuickSortImpl<std::integer_sequence<T>> { // 空序列
+    using type = std::integer_sequence<T>;
+};
+template <typename T, T Val>
+struct QuickSortImpl<std::integer_sequence<T, Val>> { // 单元素序列
+    using type = std::integer_sequence<T, Val>;
+};
+
+// 递归步骤
+template <typename T, T Pivot, T... Rest> // Pivot 是序列的第一个元素
+struct QuickSortImpl<std::integer_sequence<T, Pivot, Rest...>> {
+private:
+    using InputSeqForPartition = std::integer_sequence<T, Rest...>;
+    using Partitioned = typename Partition<T, Pivot, InputSeqForPartition>::type;
+
+    using SortedLess    = typename QuickSortImpl<typename Partitioned::Less>::type;
+    using SortedGreater = typename QuickSortImpl<typename Partitioned::Greater>::type;
+    // Partitioned::Equal 包含了所有等于 Pivot 的元素
+
+public:
+    // 结果 = SortedLess + Equal (含原Pivot) + SortedGreater
+    using type = ConcatSequences<
+                     SortedLess,
+                     ConcatSequences<
+                         typename PrependElement<T, Pivot, typename Partitioned::Equal>::type, // 把原始Pivot加回到Equal部分
+                         SortedGreater
+                     >
+                 >;
+};
+
+template <typename Seq>
+using QuickSort = typename QuickSortImpl<Seq>::type;
+
+
+// --- 辅助打印序列的函数 ---
+template <typename T, T... Is>
+void print_sequence(std::integer_sequence<T, Is...>) {
+    std::cout << "Sequence: ";
+    // C++17 fold expression:
+    // ( (std::cout << Is << ' '), ... );
+    // C++11/14 way:
+    using expander = int[];
+    (void)expander{0, ((std::cout << Is << ' '), 0)...};
+    std::cout << std::endl;
+}
+
+int main() {
+    // 要排序的序列: (3, 1, 4, 1, 5, 9, 2, 6)
+    using MySequence = std::integer_sequence<int, 3, 1, 4, 1, 5, 9, 2, 6>;
+    std::cout << "Original ";
+    print_sequence(MySequence{});
+
+    // 执行编译期快速排序
+    using SortedSequence = QuickSort<MySequence>;
+    std::cout << "Sorted ";
+    print_sequence(SortedSequence{}); // 预期输出: 1, 1, 2, 3, 4, 5, 6, 9
+
+    // 空序列
+    using EmptySeq = std::integer_sequence<int>;
+    std::cout << "Original empty ";
+    print_sequence(EmptySeq{});
+    using SortedEmpty = QuickSort<EmptySeq>;
+    std::cout << "Sorted empty ";
+    print_sequence(SortedEmpty{});
+
+    // 已排序序列
+    using AlreadySorted = std::integer_sequence<int, 1, 2, 3, 5, 8>;
+    std::cout << "Original already sorted ";
+    print_sequence(AlreadySorted{});
+    using SortedAlready = QuickSort<AlreadySorted>;
+    std::cout << "Sorted already sorted ";
+    print_sequence(SortedAlready{});
+
+    // 反向排序序列
+    using ReverseSorted = std::integer_sequence<int, 5, 4, 3, 2, 1>;
+    std::cout << "Original reverse sorted ";
+    print_sequence(ReverseSorted{});
+    using SortedReverse = QuickSort<ReverseSorted>;
+    std::cout << "Sorted reverse sorted ";
+    print_sequence(SortedReverse{});
+
+    return 0;
+}
+
+```
+**解释：**
+-   **`ConcatSequences`**: 简单地将两个序列的整数包合并。
+-   **`PrependElement`**: 将单个元素添加到序列的开头，是 `PartitionImpl` 中的辅助工具。
+-   **`PartitionImpl`**:
+    -   递归地遍历输入序列。
+    -   对于每个元素 `Head`，与 `Pivot` 比较。
+    -   根据比较结果，将 `Head` 添加到 `CurrentLess`、`CurrentEqual` 或 `CurrentGreater` 序列中，然后处理 `RemainingSeq`。
+    -   `PartitionResult` 结构体用于返回三个结果序列。
+-   **`QuickSortImpl`**:
+    -   **基线条件**：空序列或单元素序列自然是有序的。
+    -   **递归步骤**：
+        1.  选择序列的第一个元素作为 `Pivot`。
+        2.  对其余元素 `Rest...` 调用 `Partition`，得到 `Less`、`Equal`（相对于Pivot的）、`Greater` 三个子序列。
+        3.  递归地对 `Less` 和 `Greater` 子序列调用 `QuickSortImpl`。
+        4.  最终结果是 `SortedLess`、`Pivot` 加上 `Partitioned::Equal`（所有等于Pivot的元素）、`SortedGreater` 的串联。注意，在我们的实现中，`Partitioned::Equal` 只包含来自 `Rest...` 中等于Pivot的元素，所以我们将原始的 `Pivot` 添加回 `Partitioned::Equal` 形成的序列中。
+
+**重要说明：**
+1.  **编译时间**：模板元编程算法，特别是递归较深的算法如快速排序，会显著增加编译时间。对于非常长的序列，这可能不切实际。
+2.  **递归深度限制**：编译器对模板实例化的递归深度有限制。
+3.  **复杂性**：代码比运行时版本复杂得多，可读性和可维护性较差。
+4.  **选择 Pivot**：在这个简单实现中，我们总是选择第一个元素作为 pivot。这对于已经排序或反向排序的列表，性能会退化（类似于运行时快速排序）。更高级的元编程快速排序可能会尝试实现更复杂的 pivot 选择策略，但这会进一步增加复杂性。
+5.  **元素类型**：此示例针对 `std::integer_sequence`，其中的元素是编译期整数常量。类似的思想可以应用于排序 Typelist（例如，根据 `sizeof(Type)` 或其他类型属性），但这需要不同的比较和操作原语。
+
+这个例子展示了模板元编程的图灵完备性——理论上可以在编译期执行任何计算，包括复杂的算法。然而，在实践中，通常只对小型数据集或在代码生成、配置等场景中使用这类复杂的编译期算法。`constexpr` 函数通常是执行编译期计算的更简洁方式，但基于模板的算法在处理纯类型操作或需要模板特化进行逻辑分支时仍然有其用武之地。
+
 ## 6.6. 其它常用的“轮子”
+
+模板元编程不仅仅是实现复杂的算法或数据结构，它还包括许多小而实用的“轮子”（工具或模式），这些轮子可以帮助我们更有效地编写泛型代码、在编译期做出决策或生成代码。本节将简要介绍一些常见的概念和技巧，其中一些已经在前面的例子中间接使用过。
+
+**1. 编译期条件判断 (`std::conditional`, `if constexpr`)**
+
+-   **`std::conditional<bool B, typename TrueType, typename FalseType>::type`**:
+    这是C++11引入的类型萃取，它根据编译期布尔常量 `B` 选择两种类型之一。如果 `B` 为 `true`，则其内嵌的 `type` 别名是 `TrueType`；否则是 `FalseType`。
+    ```C++
+    #include <type_traits>
+    #include <iostream>
+
+    template <int N>
+    struct GetResultType {
+        using type = typename std::conditional<(N > 10), double, int>::type;
+    };
+
+    // GetResultType<5>::type  is int
+    // GetResultType<15>::type is double
+    ```
+
+-   **`if constexpr (condition)` (C++17)**:
+    `if constexpr` 允许在编译期根据条件编译或丢弃代码块。这比使用 SFINAE 或标签分发（tag dispatching）来选择不同实现要简洁得多。
+    ```C++
+    template <typename T>
+    auto get_value(T t) {
+        if constexpr (std::is_pointer_v<T>) {
+            return *t; // 如果 T 是指针，解引用
+        } else {
+            return t;  // 否则直接返回
+        }
+    }
+    // int x = 10;
+    // int val1 = get_value(&x); // val1 is 10
+    // int val2 = get_value(x);  // val2 is 10
+    ```
+    在 `if constexpr` 中，未被选择的分支必须仍然是语法有效的（在模板实例化之前），但它不会被实例化（除非实例化不依赖于模板参数）。这意味着如果未选择的分支包含依赖于模板参数且会导致硬错误的构造，这些错误通常不会发生。
+
+**2. 编译期循环/递归 (Recursive Template Instantiation)**
+
+正如在阶乘、斐波那契、Typelist 操作和快速排序示例中看到的那样，模板元编程中的“循环”通常通过递归模板实例化实现。
+-   一个主模板定义递归步骤。
+-   一个或多个特化版本定义基线条件（终止条件）。
+
+这种模式是元编程的基础。
+
+**3. SFINAE (Substitution Failure Is Not An Error)**
+
+SFINAE 是一种强大的机制，用于在函数模板重载解析期间，根据类型替换是否成功来启用或禁用特定的模板。
+-   **`std::enable_if<bool B, typename T = void>::type`**: 如果 `B` 为 `true`，则 `type` 为 `T` (默认为 `void`)；否则，`type` 不存在，导致替换失败。
+    常用于函数返回类型、函数参数（通常是默认模板参数或额外的默认函数参数）或类模板的非类型模板参数。
+    ```C++
+    template <typename T, typename std::enable_if_t<std::is_integral_v<T>>* = nullptr>
+    void process_integral(T val) { /* ... */ }
+
+    template <typename T, typename std::enable_if_t<std::is_floating_point_v<T>>* = nullptr>
+    void process_floating(T val) { /* ... */ }
+    ```
+    (这里的 `std::enable_if_t` 是 `typename std::enable_if<...>::type` 的别名)
+
+**4. 标签分发 (Tag Dispatching)**
+
+在 SFINAE 不够用或导致代码过于复杂时（尤其是在C++17 `if constexpr` 出现之前），标签分发是另一种根据类型属性选择不同实现的技术。
+它通过创建一个额外的函数重载，该重载接受一个“标签”类型参数，这个标签类型本身是通过类型萃取生成的。
+
+```C++
+#include <iterator> // For iterator tags
+#include <vector>
+#include <list>
+#include <iostream>
+
+// 标签类型
+struct my_random_access_iterator_tag {};
+struct my_bidirectional_iterator_tag {};
+// ... 其他标签
+
+// 通过类型萃取获取迭代器类别对应的标签
+template <typename Iterator>
+struct get_iterator_my_tag {
+    // 简化版：实际中会用 std::iterator_traits<Iterator>::iterator_category
+    // 并将其映射到自定义标签或直接使用标准标签
+    using category = typename std::iterator_traits<Iterator>::iterator_category;
+    using tag = typename std::conditional<
+        std::is_same_v<category, std::random_access_iterator_tag>,
+        my_random_access_iterator_tag,
+        my_bidirectional_iterator_tag // 假设只有这两种，实际更复杂
+    >::type;
+};
+
+
+// advance_impl 内部实现，根据标签分发
+template <typename Iterator, typename Distance>
+void advance_impl(Iterator& it, Distance n, my_random_access_iterator_tag) {
+    std::cout << "Advancing using random access tag (it += n)" << std::endl;
+    it += n; // 对于随机访问迭代器，可以直接 +=
+}
+
+template <typename Iterator, typename Distance>
+void advance_impl(Iterator& it, Distance n, my_bidirectional_iterator_tag) {
+    std::cout << "Advancing using bidirectional tag (loop)" << std::endl;
+    if (n > 0) {
+        while (n-- > 0) ++it;
+    } else {
+        // 假设双向迭代器也支持 --
+        while (n++ < 0) --it;
+    }
+}
+
+// 用户调用的 advance 函数
+template <typename Iterator, typename Distance>
+void my_advance(Iterator& it, Distance n) {
+    // 创建标签实例并调用相应的 advance_impl
+    advance_impl(it, n, typename get_iterator_my_tag<Iterator>::tag{});
+}
+
+int main() {
+    std::vector<int> vec = {1, 2, 3, 4, 5};
+    auto vec_it = vec.begin();
+    my_advance(vec_it, 2); // 应使用 random_access_iterator_tag
+
+    std::list<int> lst = {10, 20, 30, 40, 50};
+    auto lst_it = lst.begin();
+    my_advance(lst_it, 2); // 应使用 bidirectional_iterator_tag
+
+    return 0;
+}
+```
+STL 中的许多算法（如 `std::advance`, `std::distance`）内部就使用了标签分发，根据迭代器类别（通过 `std::iterator_traits` 获得）选择最优实现。
+
+**5. 编译期断言 (`static_assert`)**
+
+`static_assert(condition, message)` 用于在编译期检查条件是否为真。如果条件为假，编译将失败，并显示指定的错误消息。这对于验证模板参数的约束、检查元编程计算结果或确保类型属性符合预期非常有用。
+
+```C++
+template <typename T, T Val>
+struct EnsurePositive {
+    static_assert(Val > 0, "Template argument Val must be positive.");
+    // ...
+};
+// EnsurePositive<int, 5> p1; // OK
+// EnsurePositive<int, -1> p2; // 编译错误，显示消息
+```
+
+**6. `void_t` (C++17, 但可模拟实现)**
+
+`std::void_t<Ts...>` 是一个简单的元编程工具，如果其所有模板参数 `Ts...` 都是有效类型（即，如果它们涉及的类型替换成功），则 `std::void_t<Ts...>` 的结果是 `void`。否则，它会导致 SFINAE 上下文中的替换失败。
+它常用于检测一个类是否拥有特定的成员类型、成员函数或满足特定表达式。
+
+```C++
+#include <type_traits>
+#include <iostream>
+#include <vector>
+
+// C++11/14 void_t 实现
+template<typename... Ts> struct make_void { typedef void type;};
+template<typename... Ts> using my_void_t = typename make_void<Ts...>::type;
+
+// 检测是否存在成员类型 `value_type`
+template <typename T, typename = void>
+struct has_value_type : std::false_type {};
+
+template <typename T>
+struct has_value_type<T, my_void_t<typename T::value_type>> : std::true_type {};
+
+// 检测是否存在成员函数 T::foo()
+template <typename T, typename = void>
+struct has_foo_method : std::false_type {};
+
+template <typename T>
+struct has_foo_method<T, my_void_t<decltype(std::declval<T>().foo())>> : std::true_type {};
+
+
+struct S1 { using value_type = int; void foo() {} };
+struct S2 {};
+
+int main() {
+    std::cout << "S1 has value_type: " << has_value_type<S1>::value << std::endl; // 1
+    std::cout << "S2 has value_type: " << has_value_type<S2>::value << std::endl; // 0
+    std::cout << "std::vector<int> has value_type: " << has_value_type<std::vector<int>>::value << std::endl; // 1
+
+    std::cout << "S1 has foo(): " << has_foo_method<S1>::value << std::endl; // 1
+    std::cout << "S2 has foo(): " << has_foo_method<S2>::value << std::endl; // 0
+    return 0;
+}
+```
+`void_t` 的巧妙之处在于它将复杂表达式的有效性检查转换为类型有效性检查，从而优雅地融入 SFINAE 机制。
+
+这些“轮子”是模板元编程的日常工具。熟练掌握它们，可以帮助我们编写出更强大、更灵活、更安全的泛型C++代码。虽然现代C++（特别是C++17及以后）通过 `if constexpr`、Concepts（C++20）等特性简化了许多元编程任务，但理解这些基础轮子的原理对于深入掌握C++模板系统仍然至关重要。
 
 # 7. 非模板的编译期计算
 
