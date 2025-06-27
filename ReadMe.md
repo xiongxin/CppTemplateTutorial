@@ -57,6 +57,13 @@
   - [7.3. 字面量运算符 (`constexpr` User-Defined Literals)](#73-字面量运算符-constexpr-user-defined-literals)
   - [7.4. `std::string` 和 `std::vector` 的 `constexpr` 支持 (C++20)](#74-stdstring-和-stdvector-的-constexpr-支持-c20)
   - [7.5. 与模板元编程的比较与结合 (Comparison and Combination with Template Metaprogramming)](#75-与模板元编程的比较与结合-comparison-and-combination-with-template-metaprogramming)
+- [8. 模板的进阶技巧](#8-模板的进阶技巧)
+  - [8.1. 嵌入类 (Nested Types and Class Templates within Templates)](#81-嵌入类-nested-types-and-class-templates-within-templates)
+  - [8.2. Template Template Parameters (模板模板参数)](#82-template-template-parameters-模板模板参数)
+  - [8.3. 高阶函数 (Higher-Order Functions in Metaprogramming)](#83-高阶函数-higher-order-functions-in-metaprogramming)
+  - [8.4. 闭包：模板的“基于对象” (Closures: "Object-Based" Templates)](#84-闭包模板的基于对象-closures-object-based-templates)
+  - [8.5. 占位符(placeholder)：在C++中实现方言的基石 (Placeholders: Foundation for DSLs in C++)](#85-占位符placeholder在c中实现方言的基石-placeholders-foundation-for-dsls-in-c)
+  - [8.6. 编译期“多态” (Compile-Time "Polymorphism")](#86-编译期多态-compile-time-polymorphism)
 
 # 1. 前言
 
@@ -4358,14 +4365,771 @@ TMP 和 `constexpr`/`consteval` 并非互斥，它们可以有效地结合：
 C++ 语言的趋势是提供更多内置的、语法更友好的编译期计算机制。`constexpr` 和 `consteval` 的不断增强，以及 `constexpr` 对标准库组件（如 `std::string`, `std::vector`, `std::algorithm` 的部分）的扩展，使得许多过去只能用复杂TMP实现的任务可以用更简单直接的方式完成。然而，模板元编程在类型操纵和高级泛型设计方面仍然具有不可替代的核心地位。明智地选择和结合这两种技术，可以编写出既强大又易于维护的现代C++代码。
 
 # 8. 模板的进阶技巧
-## 8.1. 嵌入类
-## 8.2. Template-Template Class
-## 8.3. 高阶函数
-## 8.4. 闭包：模板的“基于对象”
-stl allocator?
-mpl::apply
+
+在前几章中，我们已经学习了模板的基础语法、元编程的基本概念、特化、SFINAE以及 `constexpr` 等编译期计算技术。本章我们将深入探讨一些更高级的模板技巧，这些技巧能够帮助我们构建更复杂、更灵活、表达能力更强的泛型库和组件。
+
+## 8.1. 嵌入类 (Nested Types and Class Templates within Templates)
+
+在类模板或普通类中，我们可以定义嵌入类型（如 `typedef`、类型别名 `using`）和嵌入类（包括嵌入类模板）。当这些定义出现在类模板中时，它们可以依赖于外部类模板的参数，从而提供与外部模板实例紧密相关的类型和结构。
+
+**嵌入类型 (Nested Types)**
+
+在类模板中定义依赖于模板参数的类型别名是很常见的。这对于向用户暴露与模板实例相关的特定类型非常有用，例如容器的值类型、指针类型或迭代器类型。
+
+```C++
+#include <iostream>
+#include <vector>
+#include <list>
+
+template <typename T>
+class MyContainer {
+public:
+    using value_type = T; // 依赖于模板参数 T
+    using reference = T&;
+    using const_reference = const T&;
+    using pointer = T*;
+    // ... 其他成员 ...
+
+    void add(const_reference val) {
+        // 假设内部使用 std::vector
+        internal_storage_.push_back(val);
+    }
+
+    const_reference get_first() const {
+        return internal_storage_.front();
+    }
+
+private:
+    std::vector<value_type> internal_storage_;
+};
+
+int main() {
+    MyContainer<int> int_container;
+    int_container.add(10);
+    MyContainer<int>::const_reference ref = int_container.get_first();
+    std::cout << "First element: " << ref << std::endl; // 输出 10
+
+    // MyContainer<int>::value_type x = 20; // x 是 int 类型
+    // static_assert(std::is_same_v<MyContainer<double>::pointer, double*>);
+    return 0;
+}
+```
+这里，`value_type`、`reference` 等都是嵌入类型，它们的具体类型取决于 `MyContainer` 实例化时所用的 `T`。
+
+**`typename` 关键字的使用**
+
+当我们在模板定义中引用一个依赖于模板参数的嵌入类型时（即所谓的“依赖名称”），如果这个名称本身也是一个类型，我们通常需要在其前面加上 `typename` 关键字。这是为了告诉编译器这个依赖名称确实代表一个类型，而不是一个静态成员变量或函数。
+
+```C++
+template <typename Container>
+void print_first_element(const Container& c) {
+    // 如果 Container 是 MyContainer<int>，那么 Container::value_type 是 int
+    // 编译器需要 typename 来确认 Container::value_type 是一个类型
+    typename Container::value_type first_val = c.get_first();
+    // 对于上面的 MyContainer，get_first() 返回 const_reference，可以赋给 value_type
+
+    std::cout << "First element via template function: " << first_val << std::endl;
+}
+
+// int main() { // (continued from above or separate)
+//    MyContainer<int> mc_int;
+//    mc_int.add(42);
+//    print_first_element(mc_int); // 输出 42
+//
+//    MyContainer<double> mc_double;
+//    mc_double.add(3.14);
+//    print_first_element(mc_double); // 输出 3.14
+//    return 0;
+// }
+```
+在 `print_first_element` 中，`Container::value_type` 是一个依赖名称。因为 `Container` 是一个模板参数，编译器在解析模板 `print_first_element` 时并不知道 `Container::value_type` 究竟是一个类型还是一个值。`typename` 关键字消除了这种歧义。
+
+**嵌入类模板 (Nested Class Templates)**
+
+类模板内部也可以定义其他的类模板。这在需要为外部模板的每个实例提供一个可参数化的内部结构时非常有用。
+
+```C++
+template <typename T>
+class Outer {
+public:
+    T outer_data;
+
+    template <typename U> // 嵌入类模板
+    class Inner {
+    public:
+        T& outer_ref; // 可以访问外部模板的参数 T
+        U inner_data;
+
+        Inner(Outer<T>& outer_obj, U val) : outer_ref(outer_obj.outer_data), inner_data(val) {}
+
+        void display() {
+            std::cout << "Outer data: " << outer_ref
+                      << ", Inner data: " << inner_data << std::endl;
+        }
+    };
+
+    Outer(T val) : outer_data(val) {}
+};
+
+int main_nested_class_template() { // Renamed main
+    Outer<int> outer_int(100);
+    Outer<int>::Inner<double> inner_double(outer_int, 3.14);
+    inner_double.display(); // 输出: Outer data: 100, Inner data: 3.14
+
+    Outer<std::string> outer_str("Hello");
+    Outer<std::string>::Inner<char> inner_char(outer_str, '!');
+    inner_char.display(); // 输出: Outer data: Hello, Inner data: !
+
+    return 0;
+}
+```
+在上面的例子中，`Outer<T>::Inner<U>` 是一个嵌入类模板。其实例化（如 `Outer<int>::Inner<double>`）同时依赖于外部模板参数 `T` 和内部模板参数 `U`。
+
+**用例：自定义迭代器**
+
+一个非常典型的用例是在容器类模板中定义其迭代器类。迭代器类通常需要知道容器的 `value_type`，并且其行为（如 `operator*`, `operator->`, `operator++`）与容器的内部结构紧密相关。
+
+```C++
+// 简化的容器和迭代器示例
+template <typename T>
+class SimpleVector {
+public:
+    using value_type = T;
+    // ... (构造函数, push_back,等) ...
+    explicit SimpleVector(size_t capacity = 0) { data_.reserve(capacity); }
+    void push_back(const T& val) { data_.push_back(val); }
+    void push_back(T&& val) { data_.push_back(std::move(val)); }
+
+
+    class iterator { // 嵌入迭代器类
+    public:
+        using iterator_category = std::forward_iterator_tag; // 或更具体的
+        using value_type = T;
+        using difference_type = std::ptrdiff_t;
+        using pointer = T*;
+        using reference = T&;
+
+    private:
+        pointer ptr_;
+
+    public:
+        explicit iterator(pointer p) : ptr_(p) {}
+
+        reference operator*() const { return *ptr_; }
+        pointer operator->() const { return ptr_; }
+        iterator& operator++() { ++ptr_; return *this; }
+        iterator operator++(int) { iterator tmp = *this; ++(*this); return tmp; }
+
+        friend bool operator==(const iterator& a, const iterator& b) { return a.ptr_ == b.ptr_; };
+        friend bool operator!=(const iterator& a, const iterator& b) { return a.ptr_ != b.ptr_; };
+    };
+
+    iterator begin() { return iterator(data_.data()); }
+    iterator end() { return iterator(data_.data() + data_.size()); }
+
+private:
+    std::vector<T> data_; // 使用 std::vector 作为内部存储
+};
+
+
+int main_iterator_example() { // Renamed main
+    SimpleVector<int> sv;
+    sv.push_back(1);
+    sv.push_back(2);
+    sv.push_back(3);
+
+    std::cout << "SimpleVector elements: ";
+    for (SimpleVector<int>::iterator it = sv.begin(); it != sv.end(); ++it) {
+        std::cout << *it << " ";
+    }
+    std::cout << std::endl; // 输出: 1 2 3
+
+    // 使用 C++11 range-based for loop (需要 begin/end 和迭代器支持)
+    std::cout << "SimpleVector elements (range-based for): ";
+    for (int val : sv) {
+        std::cout << val << " ";
+    }
+    std::cout << std::endl; // 输出: 1 2 3
+
+    return 0;
+}
+```
+在这个 `SimpleVector` 例子中，`iterator` 类被嵌入到 `SimpleVector<T>` 中。它自然地可以访问 `T` (作为 `SimpleVector<T>::value_type` 或直接 `T`)，并且其实现与 `SimpleVector` 的数据存储方式（这里是 `std::vector`）相关联。
+
+嵌入类型和嵌入类模板是C++模板中组织和封装与模板实例相关的类型和逻辑的强大工具，它们增强了代码的模块化和可读性，是许多泛型库设计的核心部分。
+
+## 8.2. Template Template Parameters (模板模板参数)
+
+模板模板参数允许我们将一个模板本身作为另一个模板的参数。这是一种强大的泛型编程技术，使得我们可以编写能够适用于不同“容器类型”或“策略模板”的通用代码。
+
+**语法：**
+
+声明一个模板模板参数的语法是 `template <[参数列表]> class Name`。例如：
+```C++
+// Policy可以是任何接受一个类型参数的类模板，如 std::less<T>
+template <typename T, template <typename> class Policy>
+class ProcessorWithPolicy {
+    // ...
+};
+
+// Container可以是任何接受一个类型参数和一个分配器类型参数（有默认值）的类模板
+// 如 std::vector<T, Alloc = std::allocator<T>>
+template <typename T,
+          template <typename, typename = std::allocator<T>> class Container>
+class MyAdapter {
+    Container<T> data_;
+public:
+    void push(const T& val) { data_.push_back(val); }
+    // ...
+};
+```
+在第二个例子中，`Container` 是一个模板模板参数。它期望一个类模板，该模板自身接受一个类型参数（将被 `T` 替换）和一个可选的分配器参数（这里我们指定了默认类型 `std::allocator<T>`，以匹配如 `std::vector` 的接口）。
+
+**规则与约束：**
+-   模板模板参数的“签名”（它自己接受的模板参数的种类和数量）必须与传入的模板实参兼容。
+-   如果模板模板参数有默认参数（如上面 `Container` 的分配器），那么在其实例化时，如果实参模板也提供这些默认参数，则可以匹配。
+-   C++17 开始，可以使用 `typename` 代替 `class` 来声明模板模板参数：`template <typename T, template <typename> typename Policy>`。
+
+**用例：**
+
+1.  **容器适配器 (Container Adapters)**：
+    `std::stack`, `std::queue`, `std::priority_queue` 是标准库中模板模板参数的经典例子。它们是容器适配器，可以基于不同的底层序列容器（如 `std::vector`, `std::deque`, `std::list`）来实现。
+
+    ```C++
+    #include <vector>
+    #include <list>
+    #include <deque>
+    #include <iostream>
+    #include <stdexcept> // For std::out_of_range
+
+    // 一个简化的 Stack 适配器
+    template <typename T,
+              template <typename Elem, typename Alloc = std::allocator<Elem>> class Container = std::deque>
+    class Stack {
+    private:
+        Container<T> ctnr_; // 使用模板模板参数 Container 来实例化底层容器
+
+    public:
+        bool empty() const { return ctnr_.empty(); }
+        size_t size() const { return ctnr_.size(); }
+        T& top() {
+            if (empty()) throw std::out_of_range("Stack<>::top(): empty stack");
+            return ctnr_.back();
+        }
+        const T& top() const {
+            if (empty()) throw std::out_of_range("Stack<>::top(): empty stack");
+            return ctnr_.back();
+        }
+        void push(const T& value) { ctnr_.push_back(value); }
+        void pop() {
+            if (empty()) throw std::out_of_range("Stack<>::pop(): empty stack");
+            ctnr_.pop_back();
+        }
+    };
+
+    int main_stack_adapter() { // Renamed main
+        Stack<int, std::vector> int_vec_stack; // 使用 std::vector 作为底层容器
+        int_vec_stack.push(1);
+        int_vec_stack.push(2);
+        std::cout << "Top (vector stack): " << int_vec_stack.top() << std::endl; // 2
+        int_vec_stack.pop();
+
+        Stack<double, std::list> double_list_stack; // 使用 std::list
+        double_list_stack.push(3.14);
+        std::cout << "Top (list stack): " << double_list_stack.top() << std::endl; // 3.14
+
+        Stack<char> char_default_stack; // 使用默认的 std::deque
+        char_default_stack.push('a');
+        std::cout << "Top (default deque stack): " << char_default_stack.top() << std::endl; // 'a'
+
+        return 0;
+    }
+    ```
+    在这个 `Stack` 例子中，`Container` 是一个模板模板参数。用户可以指定用 `std::vector<T>`, `std::list<T>`, 或默认的 `std::deque<T>` 作为栈的实际存储。
+
+2.  **策略化设计 (Policy-Based Design)**：
+    允许用户通过模板参数传入不同的“策略类模板”，这些策略类模板定义了类行为的某些方面。
+    ```C++
+    // 策略模板的例子
+    template <typename T>
+    struct DefaultCreationPolicy {
+        static T* create() { return new T(); }
+    };
+
+    template <typename T>
+    struct CustomCreationPolicy {
+        static T* create() {
+            std::cout << "Custom creation for type " << typeid(T).name() << std::endl;
+            return new T(123); // 假设 T 有一个接受 int 的构造函数
+        }
+    };
+
+    struct MyType { // 一个可以被策略创建的类型
+        MyType() { std::cout << "MyType default constructor\n"; }
+        MyType(int x) { std::cout << "MyType int constructor: " << x << "\n"; }
+    };
+
+    template <typename T, template <typename> class CreationPolicy = DefaultCreationPolicy>
+    class ObjectFactory {
+    public:
+        T* make_object() {
+            return CreationPolicy<T>::create();
+        }
+    };
+
+    int main_policy_example() { // Renamed main
+        ObjectFactory<MyType> factory1; // 使用默认创建策略
+        MyType* obj1 = factory1.make_object();
+        delete obj1;
+
+        std::cout << "-----\n";
+
+        ObjectFactory<MyType, CustomCreationPolicy> factory2; // 使用自定义创建策略
+        MyType* obj2 = factory2.make_object();
+        delete obj2;
+
+        return 0;
+    }
+    ```
+    这里，`CreationPolicy` 是一个模板模板参数，允许 `ObjectFactory` 使用不同的方式来创建 `T` 类型的对象。
+
+模板模板参数是实现高度泛型和可配置组件的有力工具。它们使得模板能够抽象出其操作所依赖的其他模板的“形状”或“接口”，从而提高了代码的复用性和灵活性。
+
+## 8.3. 高阶函数 (Higher-Order Functions in Metaprogramming)
+
+在函数式编程中，高阶函数是指那些可以接受其他函数作为参数，或者返回一个函数作为结果的函数。在C++模板元编程中，我们可以模拟这个概念：“元函数”（通常是类模板）可以接受其他元函数作为参数，或者其结果本身是一个元函数（或一个可用于后续元编程操作的类型）。
+
+**元函数作为参数：**
+
+一个元函数（类模板）可以将其模板参数特化为另一个类模板（元函数）。更常见的是，一个元函数会接受一个代表操作的类型（这个类型本身可能是一个元函数，通过其内嵌的 `::type` 或 `::value` 来执行操作）。
+
+```C++
+#include <type_traits> // For std::is_integral, std::add_pointer, etc.
+#include <iostream>
+#include <vector>
+
+// 先定义 Typelist (来自 6.3 节)
+struct NullType {};
+template <typename H, typename T> struct TypeNode { using Head = H; using Tail = T; };
+
+// Metafunction: Apply একটি unary metafunction F to each element of a typelist
+template <template<typename> class F, typename TypeList>
+struct Transform;
+
+template <template<typename> class F>
+struct Transform<F, NullType> {
+    using Result = NullType;
+};
+
+template <template<typename> class F, typename H, typename T>
+struct Transform<F, TypeNode<H, T>> {
+    using NewHead = typename F<H>::type; // Apply F to Head
+    using NewTail = typename Transform<F, T>::Result; // Recurse on Tail
+    using Result = TypeNode<NewHead, NewTail>;
+};
+
+// --- 示例元函数 (作为 Transform 的参数 F) ---
+// 1. AddPointer: 给类型加上指针
+template <typename T>
+struct AddPointer {
+    using type = T*;
+};
+
+// 2. MakeSigned: (简化的) 如果是整型，尝试转为有符号，否则不变
+template <typename T>
+struct MakeSigned {
+    using type = typename std::conditional<std::is_integral_v<T>,
+                                         std::make_signed_t<T>,
+                                         T>::type;
+};
+
+// --- 辅助打印 Typelist ---
+template <typename TL> void PrintTypeList();
+template <> void PrintTypeList<NullType>() { std::cout << "NullType\n"; }
+template <typename H, typename T>
+void PrintTypeList<TypeNode<H,T>>() {
+    std::cout << typeid(H).name() << " -> ";
+    PrintTypeList<T>();
+}
+
+
+int main_transform() { // Renamed main
+    using MyList = TypeNode<int, TypeNode<char, TypeNode<double, NullType>>>;
+    std::cout << "Original List: "; PrintTypeList<MyList>();
+
+    // 应用 AddPointer
+    using PtrList = Transform<AddPointer, MyList>::Result;
+    std::cout << "Pointer List:  "; PrintTypeList<PtrList>();
+    // Expected: int* -> char* -> double* -> NullType
+
+    // 应用 MakeSigned
+    using SignedList = Transform<MakeSigned, TypeNode<unsigned int, TypeNode<char, TypeNode<float, NullType>>>>::Result;
+    std::cout << "Signed List:   "; PrintTypeList<SignedList>();
+    // Expected: int -> signed char -> float -> NullType
+
+    return 0;
+}
+```
+在 `Transform` 元函数中，`F` 是一个模板模板参数，代表一个一元元函数（接受一个类型参数并产生一个 `::type` 结果）。`AddPointer` 和 `MakeSigned` 是符合这种接口的元函数。
+
+**元函数作为结果：**
+
+虽然不那么直接，但一个元函数可以通过其 `::type` 成员返回一个配置好的结构体或另一个类模板的特化，这个结果随后可以像元函数一样被使用。
+
+```C++
+// Metafunction: SelectOperation
+// 根据布尔条件选择两个一元元函数之一 (F1 或 F2)
+template <bool Condition, template<typename> class F1, template<typename> class F2>
+struct SelectOperation {
+    // Resulting metafunction (as a struct with a 'apply' nested template)
+    struct type {
+        template <typename T>
+        using apply = typename std::conditional_t<Condition, F1<T>, F2<T>>::type;
+    };
+};
+
+// 示例元函数: Identity (返回自身)
+template<typename T> struct Identity { using type = T; };
+
+int main_select_op() { // Renamed main
+    using SelectedOp1 = SelectOperation<true, AddPointer, Identity>::type;
+    using Result1 = SelectedOp1::apply<int>; // 应该是 int*
+    std::cout << "SelectedOp1 (true) on int: " << typeid(Result1).name() << std::endl;
+
+    using SelectedOp2 = SelectOperation<false, AddPointer, Identity>::type;
+    using Result2 = SelectedOp2::apply<double>; // 应该是 double
+    std::cout << "SelectedOp2 (false) on double: " << typeid(Result2).name() << std::endl;
+
+    return 0;
+}
+```
+这里，`SelectOperation::type` 自身是一个结构体，它包含一个嵌套的 `apply` 模板，使其行为像一个元函数。
+
+高阶元函数的概念在诸如 Boost.MPL、Boost.Hana 等库中被广泛使用，它们提供了如 `mpl::apply`, `mpl::lambda`, `mpl::bind`, `mpl::protect` 等工具，使得元编程更加灵活和富有表达力。这些工具允许动态（编译期动态）地组合和应用元函数。
+
+## 8.4. 闭包：模板的“基于对象” (Closures: "Object-Based" Templates)
+
+在运行时编程中，闭包是一个函数对象，它“捕获”了其创建时作用域中的一些变量，即使在原始作用域消失后，这些被捕获的变量依然对该函数对象可用。在模板元编程中，我们可以模拟类似的概念：一个类模板在实例化时可以“捕获”一些类型或编译期常量作为其模板参数。这个实例化后的类（一个具体的类型）然后可以被视为一个“配置好”的元函数或类型，它封装了这些捕获的“状态”。
+
+这种“捕获”是通过模板参数的绑定来实现的。一旦类模板被特定的参数实例化，这些参数就成为了该具体类型的一部分。
+
+**示例：绑定元函数的参数**
+
+假设我们有一个二元元函数 `Pair<T, U>`，它简单地创建一个包含两种类型的 `std::pair`。我们可以创建一个“闭包”元函数，它捕获 `Pair` 的第一个参数，从而将其转换为一个一元元函数。
+
+```C++
+#include <utility> // For std::pair
+#include <iostream>
+#include <typeinfo>
+
+// 二元元函数：创建一个 std::pair
+template <typename T1, typename T2>
+struct MakePair {
+    using type = std::pair<T1, T2>;
+};
+
+// “闭包”元函数：绑定 MakePair 的第一个参数
+template <typename FixedArg1, template<typename,typename> class BinaryMetaFunc>
+struct Bind1st {
+    // 这个实例化的 Bind1st<FixedArg1, BinaryMetaFunc> 就是一个“闭包”
+    // 它捕获了 FixedArg1 和 BinaryMetaFunc
+    template <typename Arg2> // 它现在表现为一个一元元函数
+    struct apply {
+        using type = typename BinaryMetaFunc<FixedArg1, Arg2>::type;
+    };
+};
+
+// 使用 Bind1st 来创建一个新的元函数 IntPairMaker
+// IntPairMaker<U> 将会是 std::pair<int, U>
+using IntPairMaker = Bind1st<int, MakePair>;
+
+int main_closure() { // Renamed main
+    // 使用“闭包” IntPairMaker
+    using P1 = IntPairMaker::apply<double>::type; // std::pair<int, double>
+    using P2 = IntPairMaker::apply<char>::type;   // std::pair<int, char>
+
+    std::cout << "P1 type: " << typeid(P1).name() << std::endl;
+    std::cout << "P2 type: " << typeid(P2).name() << std::endl;
+
+    // 另一个例子：绑定到 std::is_same (也是一个二元元函数)
+    // IsSameAsInt<U> 会判断 U 是否是 int
+    template <typename T1, typename T2>
+    struct IsSameAlias { // std::is_same 本身就可以直接用
+        static constexpr bool value = std::is_same_v<T1, T2>;
+    };
+
+    // 注意：std::is_same::value 不是类型，所以 Bind1st 需要调整
+    // 或创建一个返回类型的版本
+    template <typename FixedArg1, template<typename,typename> class BinaryPredicate>
+    struct PredicateBind1st {
+        template <typename Arg2>
+        struct apply {
+            static constexpr bool value = BinaryPredicate<FixedArg1, Arg2>::value;
+        };
+    };
+
+    using IsInt = PredicateBind1st<int, IsSameAlias>;
+    static_assert(IsInt::apply<int>::value == true, "");
+    static_assert(IsInt::apply<double>::value == false, "");
+
+    std::cout << "Is double the same as int? " << IsInt::apply<double>::value << std::endl;
+
+    return 0;
+}
+```
+在这个例子中：
+-   `Bind1st<int, MakePair>` 创建了一个新的类型（我们别名为 `IntPairMaker`）。
+-   `IntPairMaker` “记住”了 `int` 和 `MakePair`。
+-   `IntPairMaker::apply<U>` 随后表现为一个一元元函数，其“捕获”的 `int` 被用作 `MakePair` 的第一个参数。
+
+**与 `stl allocator?` 和 `mpl::apply` 的关联**
+
+-   **STL Allocators**: 自定义分配器本身就是一种通过模板参数（如 `std::allocator<T>` 中的 `T`）和可能的非类型模板参数或成员变量（对于有状态分配器）来“配置”行为的方式。一个分配器类型，如 `MyAllocator<MyType, MyPolicyValue>`，可以被看作是一个捕获了 `MyType` 和 `MyPolicyValue` 的编译期配置。当容器使用这个分配器时，其行为受到这些“捕获”参数的影响。
+
+-   **`boost::mpl::apply`**: `mpl::apply` 是 Boost.MPL 库中用于调用元函数的工具。它可以与 `mpl::bind` 和 `mpl::lambda`（它们创建编译期闭包/部分应用的元函数）很好地配合。
+    ```cpp
+    // 伪代码，类似 Boost.MPL
+    // using namespace boost::mpl;
+    // typedef apply< bind< quote2<std::is_same>, _1, int >, double >::type result;
+    // // result::value 会是 false
+    // // bind< quote2<std::is_same>, _1, int > 创建了一个元函数闭包，
+    // // 它会检查其第一个参数 (_1) 是否与 int 相同。
+    // // apply 将 double 作为 _1 传入。
+    ```
+    `quoteN` 用于将普通模板转换为 MPL 元函数。`_1` 是占位符。`bind` 创建了一个“闭包”。
+
+编译期闭包的概念允许我们将通用的元函数特化或配置为更具体的版本，这在构建复杂的类型计算逻辑时非常有用，可以提高代码的模块性和复用性。
+
 ## 8.5. 占位符(placeholder)：在C++中实现方言的基石
-## 8.6. 编译期“多态”
+
+占位符（Placeholders）在模板元编程中，特别是在如 Boost.MPL 或 Boost.Hana 这样的库中，扮演着至关重要的角色。它们是特殊的类型，用于在元函数表达式中代表“尚未指定”的参数。当这样的表达式被“调用”或“应用”时，占位符会被实际的参数替换。
+
+占位符使得元编程表达式可以写得更像函数式语言中的 lambda 表达式或绑定表达式，从而提高了代码的可读性和表达能力。它们是构建元编程“方言”或嵌入式领域特定语言（DSL）的基础。
+
+**概念：**
+
+最常见的占位符是 `_1`, `_2`, `_3`, ...，分别代表元函数表达式的第一个、第二个、第三个参数等。
+
+**与 `bind` 和 `lambda` 结合使用 (以 Boost.MPL 为例)**
+
+Boost.MPL 提供了 `mpl::bind` 和 `mpl::lambda` 工具，它们与占位符紧密配合：
+-   `mpl::bind<MetaFunc, Arg1, Arg2, ...>`: 创建一个新的元函数（一个“闭包”），它将 `MetaFunc` 与某些参数 `Arg1, Arg2, ...` 绑定。这些参数可以是具体的类型/常量，也可以是占位符。
+-   `mpl::lambda<Expression>`: 将一个包含占位符的元编程表达式转换为一个完整的元函数。
+
+```C++
+#include <boost/mpl/lambda.hpp>
+#include <boost/mpl/bind.hpp>
+#include <boost/mpl/placeholders.hpp>
+#include <boost/mpl/apply.hpp>
+#include <boost/mpl/vector.hpp>
+#include <boost/mpl/transform.hpp>
+#include <boost/type_traits/add_pointer.hpp>
+#include <boost/type_traits/is_same.hpp>
+#include <iostream>
+#include <typeinfo>
+
+namespace mpl = boost::mpl;
+using namespace mpl::placeholders; // _1, _2, etc.
+
+int main_placeholder() { // Renamed main
+    // 1. 使用 mpl::bind 和占位符
+    // 创建一个元函数 `add_pointer_to_first_arg`，它接受一个参数（由_1代表）
+    // 并返回指向该参数类型的指针。
+    using AddPtrMetaFunc = mpl::bind<boost::add_pointer<_1>, _1>;
+
+    // 使用 apply 来调用这个新元函数
+    using PtrToInt = mpl::apply<AddPtrMetaFunc, int>::type; // 结果是 int*
+    std::cout << "PtrToInt: " << typeid(PtrToInt).name() << std::endl;
+    static_assert(boost::is_same<PtrToInt, int*>::value, "");
+
+    // 2. 使用 mpl::lambda
+    // 创建一个元函数，它检查其参数是否为 int
+    using IsIntLambda = mpl::lambda<boost::is_same<_1, int>>::type;
+
+    // apply 这个 lambda 元函数
+    using R1 = mpl::apply<IsIntLambda, int>::type;    // mpl::true_
+    using R2 = mpl::apply<IsIntLambda, double>::type; // mpl::false_
+
+    static_assert(R1::value, "");
+    static_assert(!R2::value, "");
+    std::cout << "Is int an int? " << R1::value << std::endl;
+    std::cout << "Is double an int? " << R2::value << std::endl;
+
+    // 3. 在 mpl::transform 中使用 lambda 表达式
+    using Types = mpl::vector<int, char, double>;
+    // 将 Types 中的每个类型 T 转换为 T*
+    using PtrTypes = mpl::transform<Types, boost::add_pointer<_1>>::type;
+    // PtrTypes 将是 mpl::vector<int*, char*, double*>
+
+    // 验证 PtrTypes 的第一个元素
+    using FirstPtrType = mpl::front<PtrTypes>::type;
+    static_assert(boost::is_same<FirstPtrType, int*>::value, "");
+    std::cout << "First type in PtrTypes: " << typeid(FirstPtrType).name() << std::endl;
+
+    return 0;
+}
+```
+在这个例子中：
+-   `boost::add_pointer<_1>` 是一个包含占位符的表达式。当与 `mpl::bind` 或作为 `mpl::transform` 的转换操作时，`_1` 会被当前处理的类型替换。
+-   `mpl::lambda` 将一个表达式（如 `boost::is_same<_1, int>`）转换为一个完整的元函数，这个元函数可以被 `mpl::apply` 调用。
+
+**占位符的意义：**
+-   **延迟求值/部分应用**：占位符允许我们定义一个操作的“骨架”，具体的参数稍后提供。
+-   **代码简洁性**：相比于手动编写层层嵌套的模板结构来实现参数绑定或操作组合，使用占位符和 `bind`/`lambda` 通常更简洁。
+-   **构建DSL**：占位符是创建嵌入式领域特定语言（DSL）的关键。例如，Boost.Spirit 使用占位符和操作符重载来构建类似EBNF的解析器表达式。
+
+虽然标准C++（直到C++20）没有直接提供像Boost.MPL那样成熟的占位符和`bind`/`lambda`元编程框架，但`std::bind`（运行时）和`std::placeholders`（运行时）展示了占位符的思想。在元编程领域，开发者通常依赖像Boost.MPL/Hana这样的库，或者针对特定需求实现简化的占位符和绑定机制。C++20的Concepts和未来的反射机制可能会提供更标准化的方式来处理类似的元编程模式。
+
+## 8.6. 编译期“多态” (Compile-Time "Polymorphism")
+
+运行时多态通常通过虚函数和继承来实现，允许在运行时根据对象的实际类型来调用相应的函数版本。编译期“多态”则是在编译阶段，根据类型信息选择不同的代码路径或实现，而无需运行时开销（如虚函数表查找）。它有多种实现方式：
+
+**1. 静态多态通过 CRTP (Curiously Recurring Template Pattern)**
+
+CRTP是一种模式，其中一个类 `Derived` 继承自一个类模板 `Base<Derived>`，将自身作为模板参数传递给基类。基类模板随后可以使用 `static_cast` 将其自身转换为 `Derived*` 或 `Derived&`，从而调用 `Derived` 类中定义的（非虚）方法。
+
+```C++
+#include <iostream>
+#include <string>
+#include <vector>
+
+// 基类模板，提供通用接口
+template <typename Derived>
+struct Comparable {
+    // 假设 Derived 实现了 operator<
+    friend bool operator>(const Derived& lhs, const Derived& rhs) {
+        return rhs < lhs;
+    }
+    friend bool operator<=(const Derived& lhs, const Derived& rhs) {
+        return !(rhs < lhs);
+    }
+    friend bool operator>=(const Derived& lhs, const Derived& rhs) {
+        return !(lhs < rhs);
+    }
+    friend bool operator==(const Derived& lhs, const Derived& rhs) {
+        // 需要 Derived 也实现 operator== 或通过 < 实现
+        return !(lhs < rhs) && !(rhs < lhs);
+    }
+    friend bool operator!=(const Derived& lhs, const Derived& rhs) {
+        return (lhs < rhs) || (rhs < lhs);
+    }
+};
+
+class MyInt : public Comparable<MyInt> {
+public:
+    int value;
+    explicit MyInt(int v) : value(v) {}
+
+    // 只需要实现 operator<
+    friend bool operator<(const MyInt& lhs, const MyInt& rhs) {
+        return lhs.value < rhs.value;
+    }
+};
+
+class MyString : public Comparable<MyString> {
+public:
+    std::string value;
+    explicit MyString(std::string v) : value(std::move(v)) {}
+
+    friend bool operator<(const MyString& lhs, const MyString& rhs) {
+        return lhs.value < rhs.value;
+    }
+};
+
+int main_crtp() { // Renamed main
+    MyInt i1(5), i2(10);
+    std::cout << "i1 < i2: " << (i1 < i2) << std::endl;   // true (MyInt::operator<)
+    std::cout << "i1 > i2: " << (i1 > i2) << std::endl;   // false (Comparable::operator>)
+    std::cout << "i1 == i1: " << (i1 == i1) << std::endl; // true (Comparable::operator==)
+
+    MyString s1("abc"), s2("def");
+    std::cout << "s1 < s2: " << (s1 < s2) << std::endl;   // true
+    std::cout << "s1 >= s2: " << (s1 >= s2) << std::endl; // false
+
+    return 0;
+}
+```
+在CRTP中，`Comparable<Derived>` 为所有继承它的类（如 `MyInt`, `MyString`）静态地添加了比较运算符，前提是这些派生类实现了核心的 `operator<`。所有调用都在编译期解析，没有虚函数开销。
+
+**2. 通过模板特化和SFINAE/`if constexpr`/Concepts**
+
+我们已经在类型萃取和SFINAE的讨论中看到，模板特化可以为不同类型提供不同的实现。这本身就是一种编译期多态：同一个模板名称（如 `my_is_pointer<T>`）根据 `T` 的不同而“表现”不同。
+-   **特化**：为特定类型或类型模式提供专门的模板实现。
+-   **SFINAE (`std::enable_if`)**: 根据类型属性选择不同的函数模板重载。
+-   **`if constexpr` (C++17)**: 在单个函数模板内根据编译期条件选择不同的代码路径。
+-   **Concepts (C++20)**: 约束模板参数，使得模板只对满足特定概念的类型有效，或通过概念重载选择不同实现。
+
+```C++
+// 示例：使用 if constexpr 实现编译期多态
+template <typename T>
+std::string to_string_poly(const T& val) {
+    if constexpr (std::is_integral_v<T>) {
+        return "Integral: " + std::to_string(val);
+    } else if constexpr (std::is_floating_point_v<T>) {
+        return "Float: " + std::to_string(val);
+    } else if constexpr (std::is_same_v<T, std::string>) {
+        return "String: " + val;
+    } else {
+        return "Unknown type";
+        // static_assert(false, "Unsupported type for to_string_poly"); // 或者编译错误
+    }
+}
+
+int main_if_constexpr_poly() { // Renamed main
+    std::cout << to_string_poly(123) << std::endl;
+    std::cout << to_string_poly(3.14) << std::endl;
+    std::cout << to_string_poly(std::string("hello")) << std::endl;
+    // struct MyStruct {};
+    // std::cout << to_string_poly(MyStruct{}) << std::endl; // 会走else分支或static_assert失败
+    return 0;
+}
+```
+
+**3. Policy-Based Design (策略化设计)**
+
+策略化设计是一种通过模板参数将类的某些行为“策略化”的技术。主类模板接受一个或多个策略类作为模板参数。每个策略类封装了一个特定的算法或行为，并提供一个共同的接口（通常是一组静态成员函数或类型别名）。主类通过这些策略来实现其功能。
+
+```C++
+// 策略：输出方式
+struct ConsoleOutputPolicy {
+    template <typename T>
+    static void output(const T& message) {
+        std::cout << message << std::endl;
+    }
+};
+
+struct FileOutputPolicy {
+    // 简化：实际文件输出会更复杂
+    template <typename T>
+    static void output(const T& message) {
+        // std::ofstream file("output.txt", std::ios::app); file << message << std::endl;
+        std::cout << "File Log (simulated): " << message << std::endl;
+    }
+};
+
+// 主类，使用输出策略
+template <typename OutputPolicy>
+class Logger {
+public:
+    template <typename T>
+    void log(const T& message) {
+        OutputPolicy::output(message); // 调用策略的静态方法
+    }
+};
+
+int main_policy_logger() { // Renamed main
+    Logger<ConsoleOutputPolicy> console_logger;
+    console_logger.log("Hello from console logger!");
+
+    Logger<FileOutputPolicy> file_logger;
+    file_logger.log("Hello from file logger!");
+
+    return 0;
+}
+```
+在这里，`Logger` 的行为（如何输出日志）由传入的 `OutputPolicy` 决定。`ConsoleOutputPolicy` 和 `FileOutputPolicy` 提供了不同的实现，但都符合 `Logger` 所期望的 `output` 静态成员函数接口。这是一种非常灵活的编译期行为组合方式。
+
+编译期多态技术提供了强大的代码复用和定制能力，同时避免了运行时多态的开销。它们是现代C++泛型库和高性能代码中常用的设计模式。
 
 #   9. 模板的威力：从foreach, transform到Linq
 ## 9.1. Foreach与Transform
